@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ncpfold"
+version = "0.1.0"
+description = "Per-fold replication study of the Neuro-Causal-PFN Phase-1 encoder chain (Giles protocol: representations fitted inside every cross-validation fold)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "scikit-learn>=1.4",
+    "pandas>=2.2",
+    "nibabel>=5.2",
+    "torch>=2.3",
+    # the encoder trainers, the experiment registry and the virtual-trial
+    # replica all live in the main package; install it first:
+    #   pip install -e ~/Scratch/neuro-causal-pfn      (Myriad venv already has it)
+    #   pip install "neurocausalpfn @ git+https://github.com/cr-cesar/neuro-causal-pfn"
+    "neurocausalpfn",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["ncpfold*"]
