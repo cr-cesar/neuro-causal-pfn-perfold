@@ -10,7 +10,9 @@ each test fold is scored with latents produced by an encoder that never saw
 it. Results land in ``<out-root>/replica/<eid>/<label>/seed<S>/`` as
 ``replica_results.csv`` (per deficit, fold, classifier, learner) and
 ``replica_headline.csv`` (the paper's aggregation; ``pehe_paper_mean`` is the
-headline). The anatomical labels of the images are computed once per
+headline). A variant's ``folds/`` folder is its primary channel (the
+disconnectome export for two-encoder variants); ``folds_lesion`` and
+``folds_both`` score the other channels when wanted. The anatomical labels of the images are computed once per
 (images dir, atlas modality) and cached under ``<out-root>/labels/``.
 """
 from __future__ import annotations
@@ -112,7 +114,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         if lookup.n_folds != n_folds:
             sys.exit(f"{rep_dir}: {lookup.n_folds} folds stored, meta says {n_folds}")
 
-        name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}"
+        channel = meta.get("channel", "primary")
+        name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
                                          n_folds=n_folds, deficits=deficits)
@@ -120,10 +123,10 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         agg = gr.headline_row(res)
         row = {"representation": name, "eid": meta["eid"], "label": meta["label"],
                "seed": int(meta["seed"]), "budget": meta.get("budget", "chain"),
-               "task": task, "modality": modality, **agg, **scenario}
+               "channel": channel, "task": task, "modality": modality, **agg, **scenario}
 
         out_dir = os.path.join(out_root, "replica", meta["eid"],
-                               str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}")
+                               str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}", channel)
         os.makedirs(out_dir, exist_ok=True)
         res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
         pd.DataFrame([row]).to_csv(os.path.join(out_dir, "replica_headline.csv"), index=False)
@@ -147,7 +150,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             res.insert(0, "representation", name)
             agg = gr.headline_row(res)
             row = {"representation": name, "eid": "ref", "label": name, "seed": 0,
-                   "budget": "-", "task": task, "modality": modality, **agg, **scenario}
+                   "budget": "-", "channel": "-", "task": task, "modality": modality, **agg, **scenario}
             out_dir = os.path.join(out_root, "replica", "ref", name)
             os.makedirs(out_dir, exist_ok=True)
             res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)

@@ -165,7 +165,7 @@ def _fusion_vae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, ov
     if fusion in ("both", "disconnectome"):
         reps.append(("disconnectome", "disconnectomes", os.path.join(out_dir, "disco"),
                      meta.get("d_disco", meta["d_lesion"])))
-    parts = []
+    out: Dict[str, np.ndarray] = {}
     for rep, kind, sub, zdim in reps:                    # lesion first, then disco (chain order)
         cfg = _vae_cfg(meta, rep, zdim, seed, sub, fold_dirs, budget, overrides, device)
         model = _run_vae_best(cfg, rep, device)
@@ -173,9 +173,11 @@ def _fusion_vae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, ov
                                     binarize=(rep == "lesion"))
         Z = encode_dataset(lambda items: model.encode_mean(items[0]), ds,
                            cfg["vae"]["batch_size"], device)
-        parts.append(align_to_canonical(Z, names, canonical))
+        out[rep] = align_to_canonical(Z, names, canonical)
         _release(model)
-    return np.concatenate(parts, axis=1)
+    if len(out) == 2:                                     # the chain's fused code, lesion first
+        out["both"] = np.concatenate([out["lesion"], out["disconnectome"]], axis=1)
+    return out
 
 
 def _vae_single(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides, device):
@@ -187,7 +189,7 @@ def _vae_single(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, ov
     Z = encode_dataset(lambda items: model.encode_mean(items[0]), ds,
                        cfg["vae"]["batch_size"], device)
     _release(model)
-    return align_to_canonical(Z, names, canonical)
+    return {"both": align_to_canonical(Z, names, canonical)}
 
 
 def _dmvae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides, device):
@@ -205,7 +207,7 @@ def _dmvae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrid
     Z = encode_dataset(lambda items: model.encode_z(items[0], items[1]), ds,
                        cfg["train"]["batch_size"], device)
     _release(model)
-    return align_to_canonical(Z, names, canonical)
+    return {"both": align_to_canonical(Z, names, canonical)}
 
 
 def _contrastive(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides, device):
@@ -223,7 +225,7 @@ def _contrastive(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, o
     Z = encode_dataset(lambda items: model.encode_z(items[0], items[1]), ds,
                        cfg["train"]["batch_size"], device)
     _release(model)
-    return align_to_canonical(Z, names, canonical)
+    return {"both": align_to_canonical(Z, names, canonical)}
 
 
 def _mae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides, device):
@@ -240,7 +242,7 @@ def _mae(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides
     ds, names = _lesion_dataset(full_dirs, "lesions", cfg["data"]["resolution"], seed, binarize=True)
     Z = encode_dataset(lambda items: model.encode_z(items[0]), ds, cfg["train"]["batch_size"], device)
     _release(model)
-    return align_to_canonical(Z, names, canonical)
+    return {"lesion": align_to_canonical(Z, names, canonical)}
 
 
 def _dscm(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, overrides, device):
@@ -258,25 +260,40 @@ def _dscm(spec, seed, fold_dirs, full_dirs, canonical, out_dir, budget, override
                                 binarize=True, with_clinical=True)
     Z = encode_dataset(lambda items: model.encode_z(items[0]), ds, cfg["train"]["batch_size"], device)
     _release(model)
-    return align_to_canonical(Z, names, canonical)
+    return {"lesion": align_to_canonical(Z, names, canonical)}
 
 
 ADAPTERS = {"fusion_vae": _fusion_vae, "vae_single": _vae_single, "dmvae": _dmvae,
             "contrastive": _contrastive, "mae": _mae, "dscm": _dscm}
 
 
+def primary_channel(codes: Dict[str, np.ndarray]) -> str:
+    """The channel the Phase-1 leaderboard certified for a variant: the
+    disconnectome export when it exists, else the single code available."""
+    if "disconnectome" in codes:
+        return "disconnectome"
+    if len(codes) == 1:
+        return next(iter(codes))
+    return "both"
+
+
 def train_and_encode(spec: RunSpec, seed: int, fold_dirs: Dict[str, str],
                      full_dirs: Dict[str, str], canonical_names: Sequence[str],
                      out_dir: str, budget: str = "chain",
-                     overrides: Optional[Dict] = None, device: str = "auto") -> np.ndarray:
-    """Train ``spec`` on the fold's train side and return Z for the whole
-    canonical listing, ``[n_canonical, d]``, rows in canonical order."""
+                     overrides: Optional[Dict] = None, device: str = "auto") -> Dict[str, np.ndarray]:
+    """Train ``spec`` on the fold's train side and return the codes of the
+    whole canonical listing, one ``[n_canonical, d]`` array per channel:
+    ``lesion`` / ``disconnectome`` / ``both`` (concatenation) for the
+    two-encoder variants, ``both`` for single codes built from both inputs
+    (early fusion, DMVAE, contrastive), ``lesion`` for lesion-only trainers
+    (MAE, DSCM). Rows are in canonical order."""
     if spec.kind not in ADAPTERS:
         raise ValueError(f"no per-fold adapter for run kind {spec.kind!r} ({spec.label})")
     dev = resolve_device({"device": device})
     os.makedirs(out_dir, exist_ok=True)
-    Z = ADAPTERS[spec.kind](spec, seed, dict(fold_dirs), dict(full_dirs), list(canonical_names),
-                            out_dir, budget, copy.deepcopy(overrides) if overrides else None, dev)
-    if Z.shape[0] != len(canonical_names):
-        raise RuntimeError(f"encoded {Z.shape[0]} rows for {len(canonical_names)} files")
-    return Z.astype(np.float32)
+    codes = ADAPTERS[spec.kind](spec, seed, dict(fold_dirs), dict(full_dirs), list(canonical_names),
+                                out_dir, budget, copy.deepcopy(overrides) if overrides else None, dev)
+    for ch, Z in codes.items():
+        if Z.shape[0] != len(canonical_names):
+            raise RuntimeError(f"{ch}: encoded {Z.shape[0]} rows for {len(canonical_names)} files")
+    return {ch: Z.astype(np.float32) for ch, Z in codes.items()}

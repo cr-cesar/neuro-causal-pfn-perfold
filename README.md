@@ -23,7 +23,12 @@ repository only adds the fold protocol around them.
    `--budget published` caps the VAEs at 32 epochs, the paper's budget.
 3. **Encoding.** The frozen encoder (best-validation checkpoint for the VAE
    family, final checkpoint for the others) encodes the full listing; the
-   rows are split into `Ztr` / `Zte` by the fold indices.
+   rows are split into `Ztr` / `Zte` by the fold indices. Two-encoder
+   variants keep every channel: `folds/` = the primary channel (the
+   disconnectome export, the one the Phase-1 leaderboard certified),
+   `folds_lesion/`, `folds_disco/`, `folds_both/` (concatenation, lesion
+   first). Single-code variants write `folds/` plus `folds_both/` or
+   `folds_lesion/` according to their input.
 4. **Scoring.** `evaluate_representation` of the replica receives a per-fold
    lookup, so each test fold is scored with latents its encoder never saw.
    Headline: `pehe_paper_mean` (all participants, tau in {-1, 0, +1}).

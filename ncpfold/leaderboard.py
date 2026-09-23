@@ -3,7 +3,7 @@
     python -m ncpfold.leaderboard --out-root outputs_perfold
 
 Reads ``<out-root>/replica/**/replica_headline.csv`` and aggregates the
-paper-scale PEHE over seeds per (eid, label, budget, task): mean, population
+paper-scale PEHE over seeds per (eid, label, budget, task, channel): mean, population
 std and n. Writes ``leaderboard.csv`` and ``leaderboard.md`` under out-root.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ def build(out_root: str):
     if not paths:
         raise SystemExit(f"no replica_headline.csv under {out_root}/replica")
     df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
-    keys = ["eid", "label", "budget", "task"]
+    keys = ["eid", "label", "budget", "task", "channel"]
     rows = []
     for key, sub in df.groupby(keys, dropna=False):
         v = sub["pehe_paper_mean"].to_numpy(dtype=float)
@@ -47,10 +47,10 @@ def build(out_root: str):
              "PEHE on the virtual-trial replica, paper definition, every representation "
              "fitted inside each fold (no anatomical leakage). Mean over seeds "
              "(population std). Lower is better.", "",
-             "| Exp | Variant | Budget | Task | Seeds | PEHE paper | Bal. acc. |",
-             "|-----|---------|--------|------|-------|------------|-----------|"]
+             "| Exp | Variant | Budget | Task | Channel | Seeds | PEHE paper | Bal. acc. |",
+             "|-----|---------|--------|------|---------|-------|------------|-----------|"]
     for r in board.itertuples():
-        lines.append(f"| {r.eid} | {r.label} | {r.budget} | {r.task} | {r.n_seeds} | "
+        lines.append(f"| {r.eid} | {r.label} | {r.budget} | {r.task} | {r.channel} | {r.n_seeds} | "
                      f"{r.pehe_paper_mean:.3f} ({r.pehe_paper_std:.3f}) | {r.balacc_mean:.3f} |")
     with open(os.path.join(out_root, "leaderboard.md"), "w") as f:
         f.write("\n".join(lines) + "\n")

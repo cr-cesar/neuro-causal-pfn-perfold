@@ -23,7 +23,7 @@ import time
 import numpy as np
 
 from .catalogue import find_run
-from .encoders import train_and_encode
+from .encoders import primary_channel, train_and_encode
 from .folds import (N_FOLDS, list_images, make_fold_dirs, modality_dirs,
                     task_dir)
 
@@ -50,22 +50,42 @@ def run_fold(eid: str, run, label, seed: int, fold: int, data_dir: str, out_root
           f"{len(tr_idx)} train / {len(te_idx)} test | kind {spec.kind} | budget {budget}")
 
     t0 = time.time()
-    Z = train_and_encode(spec, 1000 * seed + fold, fold_info["dirs"], dirs, names,
-                         os.path.join(var_dir, f"fold{fold}"), budget=budget,
-                         overrides=overrides, device=device)
-    os.makedirs(folds_dir, exist_ok=True)
-    np.savez(npz_path, Ztr=Z[tr_idx], Zte=Z[te_idx], tr_idx=tr_idx, te_idx=te_idx,
-             files=np.array(names), fold=fold, n_folds=n_folds, dim=Z.shape[1],
-             eid=np.array(eid), label=np.array(spec.label), seed=seed,
-             budget=np.array(budget), task=np.array(task))
+    codes = train_and_encode(spec, 1000 * seed + fold, fold_info["dirs"], dirs, names,
+                             os.path.join(var_dir, f"fold{fold}"), budget=budget,
+                             overrides=overrides, device=device)
+    primary = primary_channel(codes)
+    # Every channel is kept under its own folder; "folds/" holds the primary
+    # one (the channel the Phase-1 leaderboard certified: disconnectome when
+    # the variant has it), so the scoring command is the same for every variant.
+    for channel, Z in codes.items():
+        targets = [os.path.join(var_dir, CHANNEL_DIRS[channel])]
+        if channel == primary:
+            targets.insert(0, folds_dir)
+        for target in targets:
+            _write_fold(target, Z, tr_idx, te_idx, names, fold, n_folds, eid, spec, seed,
+                        budget, task, channel, channel == primary)
+    Zp = codes[primary]
+    print(f"wrote {npz_path} [{primary}]  Ztr{Zp[tr_idx].shape} Zte{Zp[te_idx].shape}  "
+          f"channels {sorted(codes)}  ({(time.time() - t0) / 3600:.2f} h)")
+    return npz_path
+
+
+CHANNEL_DIRS = {"disconnectome": "folds_disco", "lesion": "folds_lesion", "both": "folds_both"}
+
+
+def _write_fold(folder, Z, tr_idx, te_idx, names, fold, n_folds, eid, spec, seed,
+                budget, task, channel, is_primary):
+    os.makedirs(folder, exist_ok=True)
+    np.savez(os.path.join(folder, f"fold{fold}.npz"), Ztr=Z[tr_idx], Zte=Z[te_idx],
+             tr_idx=tr_idx, te_idx=te_idx, files=np.array(names), fold=fold, n_folds=n_folds,
+             dim=Z.shape[1], eid=np.array(eid), label=np.array(spec.label), seed=seed,
+             budget=np.array(budget), task=np.array(task), channel=np.array(channel))
     meta = {"eid": eid, "label": spec.label, "kind": spec.kind, "seed": seed,
             "budget": budget, "task": task, "n_folds": n_folds, "dim": int(Z.shape[1]),
+            "channel": channel, "primary": bool(is_primary),
             "meta": {k: (list(v) if isinstance(v, tuple) else v) for k, v in spec.meta.items()}}
-    with open(os.path.join(folds_dir, "meta.json"), "w") as f:
+    with open(os.path.join(folder, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2, default=str)
-    print(f"wrote {npz_path}  Ztr{Z[tr_idx].shape} Zte{Z[te_idx].shape}  "
-          f"({(time.time() - t0) / 3600:.2f} h)")
-    return npz_path
 
 
 def main(argv=None):
