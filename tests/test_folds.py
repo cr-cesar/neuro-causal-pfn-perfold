@@ -56,3 +56,30 @@ def test_align_to_canonical_permutes_and_checks():
         align_to_canonical(Z, ["c", "a", "zz"], canonical)
     with pytest.raises(ValueError):
         align_to_canonical(Z[:2], ["c", "a"], canonical)
+
+
+def test_group_aware_fold_dirs_keep_repeats_in_training(tiny_data, tmp_path):
+    pytest.importorskip("neurocausalpfn.prior.giles_replica")
+    from neurocausalpfn.prior.giles_replica import group_folds  # noqa: F401  (needs main repo >= PR #33)
+
+    dirs = modality_dirs(tiny_data)
+    canonical = list_images(dirs["disconnectomes"])
+    names = [os.path.basename(p) for p in canonical]
+    # names[0] and names[1] are two acquisitions of one group; the rest are singles
+    groups = {names[0]: ("g0", 0), names[1]: ("g0", 1)}
+    for nm in names[2:]:
+        groups[nm] = (f"g_{nm}", 0)
+    for mode in ("giles", "strict"):
+        root = str(tmp_path / mode)
+        tested = []
+        for fold in range(3):
+            info = make_fold_dirs(root, dirs, canonical, fold, 3, groups=groups, mode=mode)
+            linked = set(os.listdir(info["dirs"]["lesions"]))
+            te_names = {names[i] for i in info["te_idx"]}
+            assert names[1] not in te_names                       # a repeat is never tested
+            if mode == "giles":
+                assert names[1] in linked                          # ... and always trains
+            else:
+                assert (names[1] in linked) == (names[0] not in te_names)   # follows its group
+            tested += sorted(te_names)
+        assert sorted(tested) == sorted(set(names) - {names[1]})  # every earliest image tested once

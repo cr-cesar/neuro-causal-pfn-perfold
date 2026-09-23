@@ -23,13 +23,13 @@ import hashlib
 import json
 import os
 import sys
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
 from neurocausalpfn.prior import giles_replica as gr
 
-from .folds import list_images, modality_dirs, task_dir
+from .folds import all_folds, list_images, load_groups, modality_dirs, task_dir
 
 
 def fold_lookup(rep_dir: str, n: int):
@@ -88,9 +88,11 @@ def rep_meta(rep_dir: str) -> Dict:
 
 def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
                modality: str = "receptor", scenario_name: str = "ideal",
-               deficits=None, with_volume: bool = False, with_nmf: bool = False) -> List[Dict]:
+               deficits=None, with_volume: bool = False, with_nmf: bool = False,
+               groups_csv: Optional[str] = None) -> List[Dict]:
     import pandas as pd
 
+    groups = load_groups(groups_csv)
     dirs = modality_dirs(data_dir)
     pairs = gr.load_atlas_pairs(atlas_dir, modality)
     scenario = dict(gr.HEADLINE_SCENARIOS[scenario_name])
@@ -113,17 +115,26 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         lookup = fold_lookup(rep_dir, len(files))
         if lookup.n_folds != n_folds:
             sys.exit(f"{rep_dir}: {lookup.n_folds} folds stored, meta says {n_folds}")
+        gmode = meta.get("group_mode") or None
+        if gmode and groups is None:
+            sys.exit(f"{rep_dir} was trained on group-aware folds ({gmode}); pass --groups")
+        if not gmode and groups is not None:
+            sys.exit(f"{rep_dir} was trained on image-level folds; drop --groups")
+        folds = all_folds(len(files), n_folds, names=[os.path.basename(f) for f in files],
+                          groups=groups, mode=gmode or "giles")
 
         channel = meta.get("channel", "primary")
-        name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}"
+        protocol = f"grp-{gmode}" if gmode else "img"
+        name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}|{protocol}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
-                                         n_folds=n_folds, deficits=deficits)
+                                         n_folds=n_folds, deficits=deficits, folds=folds)
         res.insert(0, "representation", name)
         agg = gr.headline_row(res)
         row = {"representation": name, "eid": meta["eid"], "label": meta["label"],
                "seed": int(meta["seed"]), "budget": meta.get("budget", "chain"),
-               "channel": channel, "task": task, "modality": modality, **agg, **scenario}
+               "channel": channel, "protocol": protocol, "task": task, "modality": modality,
+               **agg, **scenario}
 
         out_dir = os.path.join(out_root, "replica", meta["eid"],
                                str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}", channel)
@@ -139,6 +150,9 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         # reference points on the same folds, task = first rep's task
         task = next(iter(files_by_task))
         files, labels = files_by_task[task], labels_by_task[task]
+        ref_folds = all_folds(len(files), 10, names=[os.path.basename(f) for f in files],
+                              groups=groups, mode="giles") if groups is not None else None
+        ref_protocol = "grp-giles" if groups is not None else "img"
         reps: Dict = {}
         if with_volume:
             v = labels["vol"].to_numpy(dtype=float)
@@ -146,11 +160,12 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         if with_nmf:
             reps["nmf50_perfold"] = _nmf_perfold(files)
         for name, Z in reps.items():
-            res = gr.evaluate_representation(Z, labels, pairs, scenario, n_folds=10)
+            res = gr.evaluate_representation(Z, labels, pairs, scenario, n_folds=10, folds=ref_folds)
             res.insert(0, "representation", name)
             agg = gr.headline_row(res)
             row = {"representation": name, "eid": "ref", "label": name, "seed": 0,
-                   "budget": "-", "channel": "-", "task": task, "modality": modality, **agg, **scenario}
+                   "budget": "-", "channel": "-", "protocol": ref_protocol, "task": task,
+                   "modality": modality, **agg, **scenario}
             out_dir = os.path.join(out_root, "replica", "ref", name)
             os.makedirs(out_dir, exist_ok=True)
             res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
@@ -199,10 +214,12 @@ def main(argv=None):
     ap.add_argument("--deficits", type=int, nargs="*", default=None)
     ap.add_argument("--with-volume", action="store_true", help="also score the volume baseline")
     ap.add_argument("--with-nmf", action="store_true", help="also score per-fold NMF-50 (slow)")
+    ap.add_argument("--groups", default=None,
+                    help="the same filename,group,rank CSV the folds were trained with")
     args = ap.parse_args(argv)
     score_reps(args.reps, args.data_dir, args.atlas_dir, args.out_root, modality=args.modality,
                scenario_name=args.scenario, deficits=args.deficits,
-               with_volume=args.with_volume, with_nmf=args.with_nmf)
+               with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups)
 
 
 if __name__ == "__main__":

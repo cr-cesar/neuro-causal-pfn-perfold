@@ -41,6 +41,8 @@ def main(argv=None):
                     help="print qsub lines (one array job per variant and seed)")
     ap.add_argument("--data-dir", default="data/Full data")
     ap.add_argument("--out-root", default="outputs_perfold")
+    ap.add_argument("--groups", default=None, help="group table for group-aware folds (qsub emission)")
+    ap.add_argument("--group-mode", default="giles", choices=["giles", "strict"])
     args = ap.parse_args(argv)
 
     rows = plan_rows(args.eids or STUDY_EIDS, args.seeds, args.budget, args.n_folds)
@@ -50,6 +52,8 @@ def main(argv=None):
             for s in range(args.seeds):
                 env = (f"EID={r['eid']},RUN={r['run']},SEED={s},BUDGET={args.budget},"
                        f"DATA_DIR={shlex.quote(args.data_dir)},OUT={shlex.quote(args.out_root)}")
+                if args.groups:
+                    env += f",GROUPS={shlex.quote(args.groups)},GROUP_MODE={args.group_mode}"
                 print(f"qsub -t 1-{args.n_folds} -v {env} qsub/perfold_train.qsub.sh   # {r['label']}")
         return
 

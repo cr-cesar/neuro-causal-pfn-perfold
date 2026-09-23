@@ -31,6 +31,7 @@ SCENARIO="${SCENARIO:-ideal}"
 EXTRA=()
 if [ -n "${WITH_VOLUME:-}" ]; then EXTRA+=(--with-volume); fi
 if [ -n "${WITH_NMF:-}" ]; then EXTRA+=(--with-nmf); fi
+if [ -n "${GROUPS:-}" ]; then EXTRA+=(--groups "$GROUPS"); fi
 
 # shellcheck disable=SC2086
 python -m ncpfold.score --reps ${REPS} --data-dir "$DATA_DIR" --atlas-dir "$ATLAS_DIR" \

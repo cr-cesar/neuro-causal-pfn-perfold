@@ -34,18 +34,37 @@ def basenames(paths: Sequence[str]) -> List[str]:
     return [os.path.basename(p) for p in paths]
 
 
-def all_folds(n: int, n_folds: int = N_FOLDS) -> List[Tuple[np.ndarray, np.ndarray]]:
-    from sklearn.model_selection import KFold
+def all_folds(n: int, n_folds: int = N_FOLDS, names: Optional[Sequence[str]] = None,
+              groups: Optional[Dict[str, Tuple[str, int]]] = None,
+              mode: str = "giles") -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Image-level folds (replica default) or, with a group table, the
+    group-aware folds of ``neurocausalpfn.prior.giles_replica.group_folds``
+    (only each group's earliest image is tested; ``mode`` places the later
+    acquisitions: 'giles' = train in every fold, 'strict' = follow their
+    group). One definition shared with the replica scorer."""
+    from neurocausalpfn.prior.giles_replica import group_folds, image_folds
 
-    return [(tr, te) for tr, te in
-            KFold(n_splits=n_folds, shuffle=True, random_state=FOLD_SEED).split(np.arange(n))]
+    if groups is None:
+        return image_folds(n, n_folds, seed=FOLD_SEED)
+    if names is None or len(names) != n:
+        raise ValueError("group-aware folds need the file names of the listing")
+    return group_folds(list(names), groups, n_folds=n_folds, seed=FOLD_SEED, mode=mode)
 
 
-def fold_indices(n: int, fold: int, n_folds: int = N_FOLDS) -> Tuple[np.ndarray, np.ndarray]:
-    folds = all_folds(n, n_folds)
+def fold_indices(n: int, fold: int, n_folds: int = N_FOLDS, names=None, groups=None,
+                 mode: str = "giles") -> Tuple[np.ndarray, np.ndarray]:
     if not 0 <= fold < n_folds:
         raise ValueError(f"fold {fold} out of range for {n_folds} folds")
-    return folds[fold]
+    return all_folds(n, n_folds, names=names, groups=groups, mode=mode)[fold]
+
+
+def load_groups(path: Optional[str]):
+    """``filename -> (group, rank)`` from a filename,group,rank CSV, or None."""
+    if not path:
+        return None
+    from neurocausalpfn.prior.giles_replica import load_group_table
+
+    return load_group_table(path)
 
 
 def modality_dirs(data_dir: str) -> Dict[str, str]:
@@ -99,7 +118,8 @@ def _relink(dst: str, src_by_name: Dict[str, str], names: Sequence[str]) -> None
 
 
 def make_fold_dirs(fold_root: str, dirs: Dict[str, str], canonical: Sequence[str],
-                   fold: int, n_folds: int = N_FOLDS) -> Dict[str, object]:
+                   fold: int, n_folds: int = N_FOLDS, groups=None,
+                   mode: str = "giles") -> Dict[str, object]:
     """Create (idempotently) ``fold_root/fold{K}/{lesions,disconnectomes}`` with
     symlinks to the train-side files of fold K, for both modalities.
 
@@ -111,7 +131,7 @@ def make_fold_dirs(fold_root: str, dirs: Dict[str, str], canonical: Sequence[str
     names = basenames(canonical)
     if len(set(names)) != len(names):
         raise ValueError("duplicate basenames in the canonical listing")
-    tr_idx, te_idx = fold_indices(len(names), fold, n_folds)
+    tr_idx, te_idx = fold_indices(len(names), fold, n_folds, names=names, groups=groups, mode=mode)
     train_names = [names[i] for i in tr_idx]
 
     made = {}
@@ -127,7 +147,8 @@ def make_fold_dirs(fold_root: str, dirs: Dict[str, str], canonical: Sequence[str
 
     manifest = {"fold": fold, "n_folds": n_folds, "n": len(names),
                 "n_train": int(len(tr_idx)), "n_test": int(len(te_idx)),
-                "te_idx": [int(i) for i in te_idx], "kfold_seed": FOLD_SEED}
+                "te_idx": [int(i) for i in te_idx], "kfold_seed": FOLD_SEED,
+                "grouped": groups is not None, "group_mode": mode if groups is not None else None}
     with open(os.path.join(fold_root, f"fold{fold}", "manifest.json"), "w") as f:
         json.dump(manifest, f)
     return {"dirs": made, "tr_idx": tr_idx, "te_idx": te_idx, "files": names}

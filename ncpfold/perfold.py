@@ -19,19 +19,22 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 import numpy as np
 
 from .catalogue import find_run
 from .encoders import primary_channel, train_and_encode
-from .folds import (N_FOLDS, list_images, make_fold_dirs, modality_dirs,
-                    task_dir)
+from .folds import (N_FOLDS, list_images, load_groups, make_fold_dirs,
+                    modality_dirs, task_dir)
 
 
 def run_fold(eid: str, run, label, seed: int, fold: int, data_dir: str, out_root: str,
              task: str = "disconnectome", budget: str = "chain", n_folds: int = N_FOLDS,
-             overrides=None, device: str = "auto", force: bool = False) -> str:
+             overrides=None, device: str = "auto", force: bool = False,
+             groups_csv: Optional[str] = None, group_mode: str = "giles") -> str:
     spec = find_run(eid, run=run, label=label)
+    groups = load_groups(groups_csv)
     dirs = modality_dirs(data_dir)
     canonical_paths = list_images(task_dir(dirs, task))
     if not canonical_paths:
@@ -44,10 +47,12 @@ def run_fold(eid: str, run, label, seed: int, fold: int, data_dir: str, out_root
         print(f"exists, skipping: {npz_path}")
         return npz_path
 
-    fold_info = make_fold_dirs(os.path.join(out_root, "folds"), dirs, canonical_paths, fold, n_folds)
+    fold_info = make_fold_dirs(os.path.join(out_root, "folds"), dirs, canonical_paths, fold, n_folds,
+                               groups=groups, mode=group_mode)
     tr_idx, te_idx, names = fold_info["tr_idx"], fold_info["te_idx"], fold_info["files"]
+    protocol = f"group-aware ({group_mode})" if groups is not None else "image-level"
     print(f"{eid} {spec.label} seed {seed} fold {fold}/{n_folds}: "
-          f"{len(tr_idx)} train / {len(te_idx)} test | kind {spec.kind} | budget {budget}")
+          f"{len(tr_idx)} train / {len(te_idx)} test | {protocol} folds | kind {spec.kind} | budget {budget}")
 
     t0 = time.time()
     codes = train_and_encode(spec, 1000 * seed + fold, fold_info["dirs"], dirs, names,
@@ -63,7 +68,8 @@ def run_fold(eid: str, run, label, seed: int, fold: int, data_dir: str, out_root
             targets.insert(0, folds_dir)
         for target in targets:
             _write_fold(target, Z, tr_idx, te_idx, names, fold, n_folds, eid, spec, seed,
-                        budget, task, channel, channel == primary)
+                        budget, task, channel, channel == primary,
+                        group_mode if groups is not None else None)
     Zp = codes[primary]
     print(f"wrote {npz_path} [{primary}]  Ztr{Zp[tr_idx].shape} Zte{Zp[te_idx].shape}  "
           f"channels {sorted(codes)}  ({(time.time() - t0) / 3600:.2f} h)")
@@ -74,15 +80,16 @@ CHANNEL_DIRS = {"disconnectome": "folds_disco", "lesion": "folds_lesion", "both"
 
 
 def _write_fold(folder, Z, tr_idx, te_idx, names, fold, n_folds, eid, spec, seed,
-                budget, task, channel, is_primary):
+                budget, task, channel, is_primary, group_mode=None):
     os.makedirs(folder, exist_ok=True)
     np.savez(os.path.join(folder, f"fold{fold}.npz"), Ztr=Z[tr_idx], Zte=Z[te_idx],
              tr_idx=tr_idx, te_idx=te_idx, files=np.array(names), fold=fold, n_folds=n_folds,
              dim=Z.shape[1], eid=np.array(eid), label=np.array(spec.label), seed=seed,
-             budget=np.array(budget), task=np.array(task), channel=np.array(channel))
+             budget=np.array(budget), task=np.array(task), channel=np.array(channel),
+             group_mode=np.array(group_mode or "none"))
     meta = {"eid": eid, "label": spec.label, "kind": spec.kind, "seed": seed,
             "budget": budget, "task": task, "n_folds": n_folds, "dim": int(Z.shape[1]),
-            "channel": channel, "primary": bool(is_primary),
+            "channel": channel, "primary": bool(is_primary), "group_mode": group_mode,
             "meta": {k: (list(v) if isinstance(v, tuple) else v) for k, v in spec.meta.items()}}
     with open(os.path.join(folder, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2, default=str)
@@ -105,12 +112,16 @@ def main(argv=None):
     ap.add_argument("--budget", default="chain", choices=["chain", "published"])
     ap.add_argument("--device", default="auto")
     ap.add_argument("--overrides", default=None, help="JSON with smoke knobs (tests only)")
+    ap.add_argument("--groups", default=None,
+                    help="filename,group,rank CSV for group-aware folds (kept outside git)")
+    ap.add_argument("--group-mode", default="giles", choices=["giles", "strict"])
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
     overrides = json.loads(args.overrides) if args.overrides else None
     run_fold(args.eid, args.run, args.label, args.seed, args.fold, args.data_dir,
              args.out_root, task=args.task, budget=args.budget, n_folds=args.n_folds,
-             overrides=overrides, device=args.device, force=args.force)
+             overrides=overrides, device=args.device, force=args.force,
+             groups_csv=args.groups, group_mode=args.group_mode)
 
 
 if __name__ == "__main__":

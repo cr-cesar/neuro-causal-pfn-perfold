@@ -5,6 +5,8 @@
 #   qsub -t 1-10 -v EID=E3,RUN=2,SEED=0,BUDGET=published qsub/perfold_train.qsub.sh
 #   python -m ncpfold.plan --eids E5 --seeds 1 --emit-qsub > submit.sh && bash submit.sh
 #
+# GROUPS=<filename,group,rank csv> (+ GROUP_MODE=giles|strict) switches to
+# group-aware folds; use a separate OUT for that protocol, e.g. OUT=outputs_perfold_grp.
 # RUN is the variant index printed by `python -m ncpfold.plan --eids <EID>`
 # (labels contain commas, which qsub -v cannot carry). Re-running a finished
 # fold is a no-op: the fold npz is skipped unless FORCE=1.
@@ -38,6 +40,7 @@ FOLD=$((SGE_TASK_ID - 1))
 
 EXTRA=()
 if [ -n "${FORCE:-}" ]; then EXTRA+=(--force); fi
+if [ -n "${GROUPS:-}" ]; then EXTRA+=(--groups "$GROUPS" --group-mode "${GROUP_MODE:-giles}"); fi
 
 python -m ncpfold.perfold --eid "$EID" --run "$RUN" --seed "$SEED" --fold "$FOLD" \
     --data-dir "$DATA_DIR" --out-root "$OUT" --task "$TASK" --budget "$BUDGET" \

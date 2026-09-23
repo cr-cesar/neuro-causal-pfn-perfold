@@ -35,6 +35,16 @@ repository only adds the fold protocol around them.
 
 Seeds: study seed `s` trains fold K with seed `1000*s + K`.
 
+**Group-aware folds.** With `--groups <csv>` (columns `filename, group, rank`;
+rank 0 = the group's earliest acquisition; built outside the repositories and
+never committed) the folds become the paper's: only rank-0 images are split
+and tested, later acquisitions train. `--group-mode giles` trains them in every
+fold (the published protocol); `strict` keeps a whole group on one side. The
+definition lives in the main package (`giles_replica.group_folds`) and is
+shared by the replica scorer, so scoring must receive the same `--groups`.
+Use a separate `--out-root` per protocol (e.g. `outputs_perfold_grp`). Needs
+the main package at or after its PR #33.
+
 ## Install (Myriad)
 
 ```bash
