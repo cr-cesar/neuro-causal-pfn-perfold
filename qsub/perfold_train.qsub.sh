@@ -5,8 +5,10 @@
 #   qsub -t 1-10 -v EID=E3,RUN=2,SEED=0,BUDGET=published qsub/perfold_train.qsub.sh
 #   python -m ncpfold.plan --eids E5 --seeds 1 --emit-qsub > submit.sh && bash submit.sh
 #
-# GROUPS=<filename,group,rank csv> (+ GROUP_MODE=giles|strict) switches to
+# GROUP_TABLE=<filename,group,rank csv> (+ GROUP_MODE=giles|strict) switches to
 # group-aware folds; use a separate OUT for that protocol, e.g. OUT=outputs_perfold_grp.
+# (Do not pass it as GROUPS: bash pre-defines GROUPS as the caller's numeric
+# group ids and discards the exported value, so the table would never arrive.)
 # RUN is the variant index printed by `python -m ncpfold.plan --eids <EID>`
 # (labels contain commas, which qsub -v cannot carry). Re-running a finished
 # fold is a no-op: the fold npz is skipped unless FORCE=1.
@@ -40,7 +42,13 @@ FOLD=$((SGE_TASK_ID - 1))
 
 EXTRA=()
 if [ -n "${FORCE:-}" ]; then EXTRA+=(--force); fi
-if [ -n "${GROUPS:-}" ]; then EXTRA+=(--groups "$GROUPS" --group-mode "${GROUP_MODE:-giles}"); fi
+GT="${GROUP_TABLE:-}"
+if [ -z "$GT" ] && [[ "${GROUPS:-}" == *[/.]* ]]; then GT="$GROUPS"; fi   # a path, not bash's group ids
+if [ -n "$GT" ]; then
+    [ -f "$GT" ] || { echo "group table not found: $GT"; exit 1; }
+    EXTRA+=(--groups "$GT" --group-mode "${GROUP_MODE:-giles}")
+fi
+echo "fold $FOLD | group table: ${GT:-none (image-level folds)} | mode ${GROUP_MODE:-giles}"
 
 python -m ncpfold.perfold --eid "$EID" --run "$RUN" --seed "$SEED" --fold "$FOLD" \
     --data-dir "$DATA_DIR" --out-root "$OUT" --task "$TASK" --budget "$BUDGET" \

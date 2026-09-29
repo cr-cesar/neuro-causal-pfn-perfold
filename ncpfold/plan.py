@@ -53,7 +53,9 @@ def main(argv=None):
                 env = (f"EID={r['eid']},RUN={r['run']},SEED={s},BUDGET={args.budget},"
                        f"DATA_DIR={shlex.quote(args.data_dir)},OUT={shlex.quote(args.out_root)}")
                 if args.groups:
-                    env += f",GROUPS={shlex.quote(args.groups)},GROUP_MODE={args.group_mode}"
+                    # GROUP_TABLE, never GROUPS: bash overrides an exported GROUPS
+                    # with the caller's numeric group ids inside the job shell
+                    env += f",GROUP_TABLE={shlex.quote(args.groups)},GROUP_MODE={args.group_mode}"
                 print(f"qsub -t 1-{args.n_folds} -v {env} qsub/perfold_train.qsub.sh   # {r['label']}")
         return
 
