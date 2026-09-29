@@ -14,6 +14,13 @@ headline). A variant's ``folds/`` folder is its primary channel (the
 disconnectome export for two-encoder variants); ``folds_lesion`` and
 ``folds_both`` score the other channels when wanted. The anatomical labels of the images are computed once per
 (images dir, atlas modality) and cached under ``<out-root>/labels/``.
+
+``--test-singles`` keeps the trained folds but scores only the patients with a
+single image (the paper's evaluation set). In 'giles' group mode the later
+acquisitions of a multi-image patient train every fold's encoder, so that
+patient's tested image is not independent of its encoder; single-image
+patients are, whatever the mode. Protocol and output folder get a
+``-singles`` suffix.
 """
 from __future__ import annotations
 
@@ -47,18 +54,47 @@ def fold_lookup(rep_dir: str, n: int):
     if not by_key:
         sys.exit(f"no fold*.npz in {rep_dir}")
 
+    owner = {int(i): key for key, (_, _, _, te) in by_key.items() for i in te}
+
     def _lookup(tr_idx, te_idx):
         key = (len(te_idx), int(te_idx[0]), int(te_idx[-1]))
-        if key not in by_key:
+        if key in by_key:
+            Ztr, Zte, tr, te = by_key[key]
+            if not (np.array_equal(tr, tr_idx) and np.array_equal(te, te_idx)):
+                sys.exit(f"{rep_dir}: stored fold indices differ from the replica's")
+            return Ztr, Zte
+        # a subset of one stored test fold (e.g. --test-singles): same training
+        # side, rows of Zte picked by position
+        key = owner.get(int(te_idx[0]))
+        if key is None:
             sys.exit(f"{rep_dir}: no stored fold matches the requested split "
                      f"(different image listing, task or fold count?)")
         Ztr, Zte, tr, te = by_key[key]
-        if not (np.array_equal(tr, tr_idx) and np.array_equal(te, te_idx)):
-            sys.exit(f"{rep_dir}: stored fold indices differ from the replica's")
-        return Ztr, Zte
+        pos = {int(i): p for p, i in enumerate(te)}
+        if not np.array_equal(tr, tr_idx) or any(int(i) not in pos for i in te_idx):
+            sys.exit(f"{rep_dir}: requested test images are not a subset of one stored fold")
+        return Ztr, Zte[[pos[int(i)] for i in te_idx]]
 
     _lookup.n_folds = len(by_key)
     return _lookup
+
+
+def singles_mask(names: Sequence[str], groups: Optional[Dict[str, tuple]]) -> np.ndarray:
+    """True for images whose group holds a single image in this listing (the
+    paper's evaluation set: patients with one acquisition). Without a group
+    table every image counts as a single."""
+    if groups is None:
+        return np.ones(len(names), dtype=bool)
+    gid = [groups.get(nm, (f"__solo__{nm}", 0))[0] for nm in names]
+    counts: Dict[str, int] = {}
+    for g in gid:
+        counts[g] = counts.get(g, 0) + 1
+    return np.array([counts[g] == 1 for g in gid], dtype=bool)
+
+
+def restrict_test(folds, mask: np.ndarray):
+    """Same training sides; test sides reduced to the masked images."""
+    return [(tr, te[mask[te]]) for tr, te in folds]
 
 
 def cached_labels(files: Sequence[str], pairs, images_dir: str, modality: str, cache_dir: str):
@@ -89,7 +125,7 @@ def rep_meta(rep_dir: str) -> Dict:
 def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
                modality: str = "receptor", scenario_name: str = "ideal",
                deficits=None, with_volume: bool = False, with_nmf: bool = False,
-               groups_csv: Optional[str] = None) -> List[Dict]:
+               groups_csv: Optional[str] = None, test_singles: bool = False) -> List[Dict]:
     import pandas as pd
 
     groups = load_groups(groups_csv)
@@ -120,11 +156,15 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             sys.exit(f"{rep_dir} was trained on group-aware folds ({gmode}); pass --groups")
         if not gmode and groups is not None:
             sys.exit(f"{rep_dir} was trained on image-level folds; drop --groups")
-        folds = all_folds(len(files), n_folds, names=[os.path.basename(f) for f in files],
-                          groups=groups, mode=gmode or "giles")
+        names = [os.path.basename(f) for f in files]
+        folds = all_folds(len(files), n_folds, names=names, groups=groups, mode=gmode or "giles")
+        if test_singles:
+            # evaluate only single-acquisition patients: none of them was in the
+            # training side of its fold's encoder, whatever the group mode
+            folds = restrict_test(folds, singles_mask(names, groups))
 
         channel = meta.get("channel", "primary")
-        protocol = f"grp-{gmode}" if gmode else "img"
+        protocol = (f"grp-{gmode}" if gmode else "img") + ("-singles" if test_singles else "")
         name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}|{protocol}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
@@ -137,7 +177,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
                **agg, **scenario}
 
         out_dir = os.path.join(out_root, "replica", meta["eid"],
-                               str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}", channel)
+                               str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}",
+                               channel + ("-singles" if test_singles else ""))
         os.makedirs(out_dir, exist_ok=True)
         res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
         pd.DataFrame([row]).to_csv(os.path.join(out_dir, "replica_headline.csv"), index=False)
@@ -150,9 +191,14 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         # reference points on the same folds, task = first rep's task
         task = next(iter(files_by_task))
         files, labels = files_by_task[task], labels_by_task[task]
-        ref_folds = all_folds(len(files), 10, names=[os.path.basename(f) for f in files],
+        ref_names = [os.path.basename(f) for f in files]
+        ref_folds = all_folds(len(files), 10, names=ref_names,
                               groups=groups, mode="giles") if groups is not None else None
         ref_protocol = "grp-giles" if groups is not None else "img"
+        if test_singles:
+            ref_folds = restrict_test(ref_folds if ref_folds is not None
+                                      else all_folds(len(files), 10), singles_mask(ref_names, groups))
+            ref_protocol += "-singles"
         reps: Dict = {}
         if with_volume:
             v = labels["vol"].to_numpy(dtype=float)
@@ -166,7 +212,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             row = {"representation": name, "eid": "ref", "label": name, "seed": 0,
                    "budget": "-", "channel": "-", "protocol": ref_protocol, "task": task,
                    "modality": modality, **agg, **scenario}
-            out_dir = os.path.join(out_root, "replica", "ref", name)
+            out_dir = os.path.join(out_root, "replica", "ref", name + ("-singles" if test_singles else ""))
             os.makedirs(out_dir, exist_ok=True)
             res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
             pd.DataFrame([row]).to_csv(os.path.join(out_dir, "replica_headline.csv"), index=False)
@@ -216,10 +262,15 @@ def main(argv=None):
     ap.add_argument("--with-nmf", action="store_true", help="also score per-fold NMF-50 (slow)")
     ap.add_argument("--groups", default=None,
                     help="the same filename,group,rank CSV the folds were trained with")
+    ap.add_argument("--test-singles", action="store_true",
+                    help="evaluate only patients with a single image (the paper's evaluation "
+                         "set); training sides and stored folds unchanged, so no image of a "
+                         "tested patient was ever in its fold's encoder")
     args = ap.parse_args(argv)
     score_reps(args.reps, args.data_dir, args.atlas_dir, args.out_root, modality=args.modality,
                scenario_name=args.scenario, deficits=args.deficits,
-               with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups)
+               with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
+               test_singles=args.test_singles)
 
 
 if __name__ == "__main__":

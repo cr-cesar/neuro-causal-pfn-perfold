@@ -5,6 +5,7 @@
 #
 #   qsub -v REPS="outputs_perfold/E5/*/seed?/folds" qsub/perfold_score.qsub.sh
 #   qsub -hold_jid <train job id> -v REPS="outputs_perfold/E1/E1/seed0/folds",WITH_VOLUME=1 ...
+#   qsub -v REPS="outputs_perfold_grp/E1/*/seed0/folds",GROUP_TABLE=outputs_perfold/groups_public.csv,TEST_SINGLES=1,OUT=outputs_perfold_grp ...
 #
 # Each representation takes about the time of one Phase-1 replica run
 # (16 deficits x 10 folds x 4 estimators); budget ~1 h each on 4 cores.
@@ -31,7 +32,12 @@ SCENARIO="${SCENARIO:-ideal}"
 EXTRA=()
 if [ -n "${WITH_VOLUME:-}" ]; then EXTRA+=(--with-volume); fi
 if [ -n "${WITH_NMF:-}" ]; then EXTRA+=(--with-nmf); fi
-if [ -n "${GROUPS:-}" ]; then EXTRA+=(--groups "$GROUPS"); fi
+# GROUP_TABLE=<filename,group,rank csv>; GROUPS still accepted when it holds a
+# path (bash pre-defines GROUPS as the caller's numeric group ids).
+GT="${GROUP_TABLE:-}"
+if [ -z "$GT" ] && [[ "${GROUPS:-}" == *[/.]* ]]; then GT="$GROUPS"; fi
+if [ -n "$GT" ]; then EXTRA+=(--groups "$GT"); fi
+if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
 
 # shellcheck disable=SC2086
 python -m ncpfold.score --reps ${REPS} --data-dir "$DATA_DIR" --atlas-dir "$ATLAS_DIR" \

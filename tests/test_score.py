@@ -43,3 +43,27 @@ def test_lookup_rejects_other_splits(tmp_path):
         lookup(tr, te)
     with pytest.raises(SystemExit):
         fold_lookup(str(tmp_path / "rep"), n + 1)      # listing size differs
+
+
+def test_singles_mask_and_restricted_lookup(tmp_path):
+    from ncpfold.score import restrict_test, singles_mask
+
+    n, n_folds = 37, 5
+    Z = _write_rep(str(tmp_path / "rep"), n, n_folds)
+    names = [f"f{i}" for i in range(n)]
+    # images 3 and 4 are one patient, 10 and 11 another; everyone else is single
+    groups = {"f3": ("p1", 0), "f4": ("p1", 1), "f10": ("p2", 0), "f11": ("p2", 1)}
+    mask = singles_mask(names, groups)
+    assert mask.sum() == n - 4 and not mask[[3, 4, 10, 11]].any()
+    assert singles_mask(names, None).all()
+
+    lookup = fold_lookup(str(tmp_path / "rep"), n)
+    for (tr, te), (tr2, te2) in zip(all_folds(n, n_folds), restrict_test(all_folds(n, n_folds), mask)):
+        assert np.array_equal(tr, tr2) and set(te2) <= set(te) and not set(te2) & {3, 4, 10, 11}
+        Ztr, Zte = lookup(tr2, te2)
+        assert np.array_equal(Ztr, Z[tr]) and np.array_equal(Zte, Z[te2])
+    # a test set that is not a subset of one stored fold is refused
+    tr, te = all_folds(n, n_folds)[0]
+    other = all_folds(n, n_folds)[1][1]
+    with pytest.raises(SystemExit):
+        lookup(tr, np.concatenate([te[:2], other[:2]]))
