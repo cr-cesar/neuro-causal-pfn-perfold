@@ -6,6 +6,7 @@
 #   qsub -v REPS="outputs_perfold/E5/*/seed?/folds" qsub/perfold_score.qsub.sh
 #   qsub -hold_jid <train job id> -v REPS="outputs_perfold/E1/E1/seed0/folds",WITH_VOLUME=1 ...
 #   qsub -v REPS="outputs_perfold_grp/E1/*/seed0/folds",GROUP_TABLE=outputs_perfold/groups_public.csv,TEST_SINGLES=1,OUT=outputs_perfold_grp ...
+#   qsub -v REPS="outputs_perfold_grp/E1/E1/seed?/folds",ENSEMBLE=1,ENSEMBLE_ONLY=1,... seed ensemble (label E1+x3)
 #
 # Each representation takes about the time of one Phase-1 replica run
 # (16 deficits x 10 folds x 4 estimators); budget ~1 h each on 4 cores.
@@ -43,6 +44,11 @@ if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
 # Weights must be in ~/.cache/causalpfn (download once on a login node).
 if [ -n "${ESTIMATORS:-}" ]; then EXTRA+=(--estimators ${ESTIMATORS}); fi
 if [ -n "${ONLY_ESTIMATORS:-}" ]; then EXTRA+=(--only-estimators); fi
+# ENSEMBLE=1 also scores the seed ensemble of the folders sharing eid/label/
+# budget/channel (latents concatenated fold by fold, label <label>+x<n>);
+# ENSEMBLE_ONLY=1 skips the single seeds.
+if [ -n "${ENSEMBLE:-}" ]; then EXTRA+=(--ensemble); fi
+if [ -n "${ENSEMBLE_ONLY:-}" ]; then EXTRA+=(--ensemble-only); fi
 
 # shellcheck disable=SC2086
 python -m ncpfold.score --reps ${REPS} --data-dir "$DATA_DIR" --atlas-dir "$ATLAS_DIR" \

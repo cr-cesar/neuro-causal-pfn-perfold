@@ -8,16 +8,16 @@ from ncpfold.folds import all_folds
 from ncpfold.score import fold_lookup, rep_meta
 
 
-def _write_rep(rep_dir, n, n_folds, dim=4):
+def _write_rep(rep_dir, n, n_folds, dim=4, seed=0):
     os.makedirs(rep_dir, exist_ok=True)
-    Z = np.random.default_rng(0).normal(size=(n, dim)).astype(np.float32)
+    Z = np.random.default_rng(seed).normal(size=(n, dim)).astype(np.float32)
     for k, (tr, te) in enumerate(all_folds(n, n_folds)):
         np.savez(os.path.join(rep_dir, f"fold{k}.npz"), Ztr=Z[tr], Zte=Z[te], tr_idx=tr, te_idx=te,
                  files=np.array([f"f{i}" for i in range(n)]), fold=k, n_folds=n_folds, dim=dim,
-                 eid=np.array("E9"), label=np.array("E9"), seed=0, budget=np.array("chain"),
+                 eid=np.array("E9"), label=np.array("E9"), seed=seed, budget=np.array("chain"),
                  task=np.array("disconnectome"))
     with open(os.path.join(rep_dir, "meta.json"), "w") as f:
-        json.dump({"eid": "E9", "label": "E9", "seed": 0, "task": "disconnectome",
+        json.dump({"eid": "E9", "label": "E9", "seed": seed, "task": "disconnectome",
                    "n_folds": n_folds, "budget": "chain", "dim": dim}, f)
     return Z
 
@@ -67,3 +67,22 @@ def test_singles_mask_and_restricted_lookup(tmp_path):
     other = all_folds(n, n_folds)[1][1]
     with pytest.raises(SystemExit):
         lookup(tr, np.concatenate([te[:2], other[:2]]))
+
+
+def test_seed_ensemble_concatenates_fold_by_fold(tmp_path):
+    from ncpfold.score import ensemble_lookup, ensemble_units
+
+    n, n_folds = 37, 5
+    dirs = [str(tmp_path / f"seed{s}" / "folds") for s in range(3)]
+    Zs = [_write_rep(d, n, n_folds, seed=s) for s, d in enumerate(dirs)]
+    units = ensemble_units(dirs, ensemble=True, ensemble_only=False)
+    assert len(units) == 4 and units[-1][0]["label"] == "E9+x3" and units[-1][0]["seeds"] == [0, 1, 2]
+    assert [u[0]["label"] for u in ensemble_units(dirs, True, True)] == ["E9+x3"]
+    assert len(ensemble_units(dirs[:1], True, False)) == 1       # a single seed has no ensemble
+    lookup = ensemble_lookup([fold_lookup(d, n) for d in dirs])
+    assert lookup.n_folds == n_folds
+    for tr, te in all_folds(n, n_folds):
+        Ztr, Zte = lookup(tr, te)
+        assert Ztr.shape == (len(tr), 12) and Zte.shape == (len(te), 12)
+        assert np.allclose(Ztr, np.concatenate([Z[tr] for Z in Zs], axis=1))
+        assert np.allclose(Zte, np.concatenate([Z[te] for Z in Zs], axis=1))

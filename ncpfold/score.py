@@ -15,6 +15,12 @@ disconnectome export for two-encoder variants); ``folds_lesion`` and
 ``folds_both`` score the other channels when wanted. The anatomical labels of the images are computed once per
 (images dir, atlas modality) and cached under ``<out-root>/labels/``.
 
+``--ensemble`` concatenates, fold by fold, the latents of every ``--reps`` folder
+that shares eid, label, budget and channel across seeds (a seed ensemble: 3
+seeds of a 50-d encoder give one 150-d representation) and scores it as
+``<label>+x<n>``; ``--ensemble-only`` skips the single seeds. Each fold still
+only uses encoders that never saw its test images.
+
 ``--test-singles`` keeps the trained folds but scores only the patients with a
 single image (the paper's evaluation set). In 'giles' group mode the later
 acquisitions of a multi-image patient train every fold's encoder, so that
@@ -79,6 +85,40 @@ def fold_lookup(rep_dir: str, n: int):
     return _lookup
 
 
+def ensemble_lookup(lookups):
+    """Column-wise concatenation of several per-fold lookups (one per seed):
+    the seed ensemble of a representation, fold by fold."""
+    def _lookup(tr_idx, te_idx):
+        parts = [lk(tr_idx, te_idx) for lk in lookups]
+        return (np.concatenate([a for a, _ in parts], axis=1),
+                np.concatenate([b for _, b in parts], axis=1))
+    _lookup.n_folds = lookups[0].n_folds
+    return _lookup
+
+
+def ensemble_units(rep_dirs: Sequence[str], ensemble: bool, ensemble_only: bool):
+    """``[(meta, [rep_dir, ...])]`` to score: every folder on its own and, with
+    ``ensemble``, one unit per group of folders sharing eid/label/budget/
+    channel/task across seeds (label ``<label>+x<n>``, seed 0)."""
+    units = [(rep_meta(d), [d]) for d in rep_dirs]
+    if not ensemble:
+        return units
+    groups: Dict[tuple, list] = {}
+    for meta, dirs in units:
+        key = (meta["eid"], str(meta["label"]), meta.get("budget", "chain"),
+               meta.get("channel", "primary"), meta.get("task", "disconnectome"))
+        groups.setdefault(key, []).append((int(meta["seed"]), meta, dirs[0]))
+    out = [] if ensemble_only else list(units)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        members.sort()
+        meta = dict(members[0][1]); meta["label"] = f"{meta['label']}+x{len(members)}"
+        meta["seed"] = 0; meta["seeds"] = [m[0] for m in members]
+        out.append((meta, [m[2] for m in members]))
+    return out
+
+
 def singles_mask(names: Sequence[str], groups: Optional[Dict[str, tuple]]) -> np.ndarray:
     """True for images whose group holds a single image in this listing (the
     paper's evaluation set: patients with one acquisition). Without a group
@@ -126,7 +166,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
                modality: str = "receptor", scenario_name: str = "ideal",
                deficits=None, with_volume: bool = False, with_nmf: bool = False,
                groups_csv: Optional[str] = None, test_singles: bool = False,
-               estimators: Sequence[str] = (), only_estimators: bool = False) -> List[Dict]:
+               estimators: Sequence[str] = (), only_estimators: bool = False,
+               ensemble: bool = False, ensemble_only: bool = False) -> List[Dict]:
     """``estimators``: extra in-context estimators registered in the main
     package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
     weights, the design's Tier-4 evaluator); they are scored next to the
@@ -155,8 +196,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
     labels_by_task: Dict[str, object] = {}
     files_by_task: Dict[str, List[str]] = {}
 
-    for rep_dir in rep_dirs:
-        meta = rep_meta(rep_dir)
+    for meta, unit_dirs in ensemble_units(rep_dirs, ensemble, ensemble_only):
+        rep_dir = unit_dirs[0]
         task = meta.get("task", "disconnectome")
         if task not in files_by_task:
             images_dir = task_dir(dirs, task)
@@ -167,7 +208,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
                                                  modality, os.path.join(out_root, "labels"))
         files, labels = files_by_task[task], labels_by_task[task]
         n_folds = int(meta.get("n_folds", 10))
-        lookup = fold_lookup(rep_dir, len(files))
+        lookup = fold_lookup(rep_dir, len(files)) if len(unit_dirs) == 1 else \
+            ensemble_lookup([fold_lookup(d, len(files)) for d in unit_dirs])
         if lookup.n_folds != n_folds:
             sys.exit(f"{rep_dir}: {lookup.n_folds} folds stored, meta says {n_folds}")
         gmode = meta.get("group_mode") or None
@@ -287,6 +329,11 @@ def main(argv=None):
                          "or a path to a trained Neuro-Causal-PFN checkpoint (pfn.pt)")
     ap.add_argument("--only-estimators", action="store_true",
                     help="score the --estimators alone (no logistic regression / extra trees)")
+    ap.add_argument("--ensemble", action="store_true",
+                    help="also score the seed ensemble of every group of --reps sharing "
+                         "eid/label/budget/channel (latents concatenated fold by fold)")
+    ap.add_argument("--ensemble-only", action="store_true",
+                    help="with --ensemble: skip the single seeds")
     ap.add_argument("--test-singles", action="store_true",
                     help="evaluate only patients with a single image (the paper's evaluation "
                          "set); training sides and stored folds unchanged, so no image of a "
@@ -296,7 +343,8 @@ def main(argv=None):
                scenario_name=args.scenario, deficits=args.deficits,
                with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
                test_singles=args.test_singles, estimators=args.estimators,
-               only_estimators=args.only_estimators)
+               only_estimators=args.only_estimators, ensemble=args.ensemble,
+               ensemble_only=args.ensemble_only)
 
 
 if __name__ == "__main__":
