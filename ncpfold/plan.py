@@ -43,6 +43,10 @@ def main(argv=None):
     ap.add_argument("--out-root", default="outputs_perfold")
     ap.add_argument("--groups", default=None, help="group table for group-aware folds (qsub emission)")
     ap.add_argument("--group-mode", default="giles", choices=["giles", "strict"])
+    ap.add_argument("--independent", action="store_true",
+                    help="emit one job per fold (-t K) instead of one array per variant: Myriad "
+                         "throttles array tasks (hqw) harder than independent jobs")
+    ap.add_argument("--h-rt", default=None, help="wall-clock per fold job, e.g. 6:0:0 (published budget: 1:30:0)")
     args = ap.parse_args(argv)
 
     rows = plan_rows(args.eids or STUDY_EIDS, args.seeds, args.budget, args.n_folds)
@@ -56,7 +60,13 @@ def main(argv=None):
                     # GROUP_TABLE, never GROUPS: bash overrides an exported GROUPS
                     # with the caller's numeric group ids inside the job shell
                     env += f",GROUP_TABLE={shlex.quote(args.groups)},GROUP_MODE={args.group_mode}"
-                print(f"qsub -t 1-{args.n_folds} -v {env} qsub/perfold_train.qsub.sh   # {r['label']}")
+                hrt = f"-l h_rt={args.h_rt} " if args.h_rt else ""
+                if args.independent:
+                    for k in range(1, args.n_folds + 1):
+                        name = f"{r['eid'].lower()}r{r['run']}s{s}f{k}"
+                        print(f"qsub -terse {hrt}-N {name} -t {k} -v {env} qsub/perfold_train.qsub.sh   # {r['label']}")
+                else:
+                    print(f"qsub {hrt}-t 1-{args.n_folds} -v {env} qsub/perfold_train.qsub.sh   # {r['label']}")
         return
 
     total_h = sum(r["gpu_hours"] for r in rows)

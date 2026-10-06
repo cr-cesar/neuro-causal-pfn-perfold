@@ -125,8 +125,27 @@ def rep_meta(rep_dir: str) -> Dict:
 def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
                modality: str = "receptor", scenario_name: str = "ideal",
                deficits=None, with_volume: bool = False, with_nmf: bool = False,
-               groups_csv: Optional[str] = None, test_singles: bool = False) -> List[Dict]:
+               groups_csv: Optional[str] = None, test_singles: bool = False,
+               estimators: Sequence[str] = (), only_estimators: bool = False) -> List[Dict]:
+    """``estimators``: extra in-context estimators registered in the main
+    package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
+    weights, the design's Tier-4 evaluator); they are scored next to the
+    logistic regression and extra trees on the same folds."""
     import pandas as pd
+
+    classifiers = ["logistic_regression", "extra_trees"]
+    for name in estimators:
+        if name == "causalpfn":
+            from neurocausalpfn.pfn.estimator import CausalPFNEstimator
+            gr.register_estimator("causalpfn", CausalPFNEstimator())
+        elif name.endswith(".pt"):
+            from neurocausalpfn.pfn.estimator import PFNEstimator
+            gr.register_estimator("pfn", PFNEstimator(name)); name = "pfn"
+        else:
+            raise ValueError(f"unknown estimator {name!r}")
+        classifiers.append(name)
+    if only_estimators and estimators:
+        classifiers = classifiers[2:]        # the design's Tier 4: the fixed estimator alone
 
     groups = load_groups(groups_csv)
     dirs = modality_dirs(data_dir)
@@ -168,7 +187,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}|{protocol}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
-                                         n_folds=n_folds, deficits=deficits, folds=folds)
+                                         n_folds=n_folds, deficits=deficits, folds=folds,
+                                         classifiers=classifiers)
         res.insert(0, "representation", name)
         agg = gr.headline_row(res)
         row = {"representation": name, "eid": meta["eid"], "label": meta["label"],
@@ -262,6 +282,11 @@ def main(argv=None):
     ap.add_argument("--with-nmf", action="store_true", help="also score per-fold NMF-50 (slow)")
     ap.add_argument("--groups", default=None,
                     help="the same filename,group,rank CSV the folds were trained with")
+    ap.add_argument("--estimators", nargs="*", default=[],
+                    help="extra in-context estimators: 'causalpfn' (off-the-shelf, fixed weights) "
+                         "or a path to a trained Neuro-Causal-PFN checkpoint (pfn.pt)")
+    ap.add_argument("--only-estimators", action="store_true",
+                    help="score the --estimators alone (no logistic regression / extra trees)")
     ap.add_argument("--test-singles", action="store_true",
                     help="evaluate only patients with a single image (the paper's evaluation "
                          "set); training sides and stored folds unchanged, so no image of a "
@@ -270,7 +295,8 @@ def main(argv=None):
     score_reps(args.reps, args.data_dir, args.atlas_dir, args.out_root, modality=args.modality,
                scenario_name=args.scenario, deficits=args.deficits,
                with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
-               test_singles=args.test_singles)
+               test_singles=args.test_singles, estimators=args.estimators,
+               only_estimators=args.only_estimators)
 
 
 if __name__ == "__main__":

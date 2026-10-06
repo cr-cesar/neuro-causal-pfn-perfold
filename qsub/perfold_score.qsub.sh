@@ -38,6 +38,11 @@ GT="${GROUP_TABLE:-}"
 if [ -z "$GT" ] && [[ "${GROUPS:-}" == *[/.]* ]]; then GT="$GROUPS"; fi
 if [ -n "$GT" ]; then EXTRA+=(--groups "$GT"); fi
 if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
+# ESTIMATORS="causalpfn" adds the off-the-shelf CausalPFN (fixed weights, the
+# design's Tier-4 evaluator); a pfn.pt path adds our trained transformer.
+# Weights must be in ~/.cache/causalpfn (download once on a login node).
+if [ -n "${ESTIMATORS:-}" ]; then EXTRA+=(--estimators ${ESTIMATORS}); fi
+if [ -n "${ONLY_ESTIMATORS:-}" ]; then EXTRA+=(--only-estimators); fi
 
 # shellcheck disable=SC2086
 python -m ncpfold.score --reps ${REPS} --data-dir "$DATA_DIR" --atlas-dir "$ATLAS_DIR" \
