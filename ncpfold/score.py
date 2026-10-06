@@ -50,7 +50,9 @@ def fold_lookup(rep_dir: str, n: int):
     to the replica's folds by their test indices (never by call order).
     Same contract as scripts/run_giles_replica.py --fold-latents."""
     by_key: Dict = {}
-    for path in sorted(glob.glob(os.path.join(rep_dir, "fold*.npz"))):
+    # glob.escape: variant labels carry brackets (E3[backbone=cnn]) that glob
+    # would otherwise read as a character class
+    for path in sorted(glob.glob(os.path.join(glob.escape(rep_dir), "fold*.npz"))):
         with np.load(path, allow_pickle=False) as z:
             tr, te = z["tr_idx"], z["te_idx"]
             if len(tr) + len(te) != n:
@@ -156,7 +158,7 @@ def rep_meta(rep_dir: str) -> Dict:
         with open(path) as f:
             return json.load(f)
     # fall back to the npz fields
-    first = sorted(glob.glob(os.path.join(rep_dir, "fold*.npz")))[0]
+    first = sorted(glob.glob(os.path.join(glob.escape(rep_dir), "fold*.npz")))[0]
     with np.load(first, allow_pickle=False) as z:
         return {"eid": str(z["eid"]), "label": str(z["label"]), "seed": int(z["seed"]),
                 "task": str(z["task"]), "n_folds": int(z["n_folds"]), "budget": str(z["budget"])}

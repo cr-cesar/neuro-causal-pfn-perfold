@@ -27,7 +27,7 @@ MODALITIES = ("lesions", "disconnectomes")
 
 def list_images(directory: str) -> List[str]:
     """The replica's listing: sorted ``*.nii*`` paths of one directory."""
-    return sorted(glob.glob(os.path.join(directory, "*.nii*")))
+    return sorted(glob.glob(os.path.join(glob.escape(directory), "*.nii*")))
 
 
 def basenames(paths: Sequence[str]) -> List[str]:

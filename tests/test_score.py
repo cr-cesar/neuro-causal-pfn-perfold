@@ -86,3 +86,14 @@ def test_seed_ensemble_concatenates_fold_by_fold(tmp_path):
         assert Ztr.shape == (len(tr), 12) and Zte.shape == (len(te), 12)
         assert np.allclose(Ztr, np.concatenate([Z[tr] for Z in Zs], axis=1))
         assert np.allclose(Zte, np.concatenate([Z[te] for Z in Zs], axis=1))
+
+
+def test_lookup_in_bracketed_variant_dir(tmp_path):
+    # variant labels such as E3[backbone=cnn] contain glob metacharacters
+    n, n_folds = 37, 5
+    rep = str(tmp_path / "E3[backbone=cnn]" / "seed0" / "folds")
+    Z = _write_rep(rep, n, n_folds)
+    lookup = fold_lookup(rep, n)
+    assert lookup.n_folds == n_folds and rep_meta(rep)["eid"] == "E9"
+    tr, te = all_folds(n, n_folds)[0]
+    assert np.allclose(lookup(tr, te)[1], Z[te])
