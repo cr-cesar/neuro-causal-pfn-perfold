@@ -19,6 +19,9 @@
 #$ -cwd
 #$ -j y
 set -euo pipefail
+# a failed step exits 100: SGE then keeps this job in error state and the jobs
+# holding on it (-hold_jid) stay queued instead of starting on missing inputs
+trap 'exit 100' ERR
 
 module load python3/3.11
 source ~/venvs/neuro/bin/activate
@@ -42,7 +45,12 @@ if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
 # ESTIMATORS="causalpfn" adds the off-the-shelf CausalPFN (fixed weights, the
 # design's Tier-4 evaluator); a pfn.pt path adds our trained transformer.
 # Weights must be in ~/.cache/causalpfn (download once on a login node).
-if [ -n "${ESTIMATORS:-}" ]; then EXTRA+=(--estimators ${ESTIMATORS}); fi
+if [ -n "${ESTIMATORS:-}" ]; then
+    for e in ${ESTIMATORS}; do      # a checkpoint path that is not there: the training job failed
+        case "$e" in *.pt) [ -s "$e" ] || { echo "no estimator checkpoint $e" >&2; exit 100; } ;; esac
+    done
+    EXTRA+=(--estimators ${ESTIMATORS})
+fi
 if [ -n "${ONLY_ESTIMATORS:-}" ]; then EXTRA+=(--only-estimators); fi
 # ENSEMBLE=1 also scores the seed ensemble of the folders sharing eid/label/
 # budget/channel (latents concatenated fold by fold, label <label>+x<n>);
