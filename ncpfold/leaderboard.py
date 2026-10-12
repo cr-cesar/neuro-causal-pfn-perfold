@@ -36,11 +36,21 @@ def build(out_root: str):
     for key, sub in df.groupby(keys, dropna=False):
         v = sub["pehe_paper_mean"].to_numpy(dtype=float)
         v = v[np.isfinite(v)]
+        def col(name):
+            return float(sub[name].mean()) if name in sub and np.isfinite(sub[name]).any() else float("nan")
         rows.append({**dict(zip(keys, key)), "n_seeds": int(len(v)),
                      "pehe_paper_mean": float(np.mean(v)) if len(v) else float("nan"),
-                     "pehe_paper_std": float(np.std(v)) if len(v) else float("nan"),
-                     "balacc_mean": float(sub["balacc_mean"].mean()) if "balacc_mean" in sub else float("nan"),
-                     "pehe_code_mean": float(sub["pehe_mean"].mean())})
+                     # population SD of the seed means (folds and simulated outcomes are
+                     # shared by the seeds): the encoder's seed noise, not a CI
+                     "pehe_paper_seed_sd": float(np.std(v)) if len(v) else float("nan"),
+                     # Giles's interval: 95% CI over the 16 deficits, mean over seeds
+                     "pehe_paper_ci_low": col("pehe_paper_ci_low"),
+                     "pehe_paper_ci_high": col("pehe_paper_ci_high"),
+                     # the paper-scale value of the cell the paper scale would select
+                     # (the headline cell is selected on the released-code scale)
+                     "pehe_paper_selected": col("pehe_paper_selected"),
+                     "balacc_mean": col("balacc_mean"),
+                     "pehe_code_mean": col("pehe_mean")})
     board = pd.DataFrame(rows)
     board["_k"] = board["eid"].map(_eid_key)
     board = board.sort_values(["_k", "pehe_paper_mean"]).drop(columns="_k")
@@ -48,13 +58,15 @@ def build(out_root: str):
 
     lines = ["# Per-fold study leaderboard", "",
              "PEHE on the virtual-trial replica, paper definition, every representation "
-             "fitted inside each fold (no anatomical leakage). Mean over seeds "
-             "(population std). Lower is better.", "",
-             "| Exp | Variant | Budget | Task | Channel | Folds | Seeds | PEHE paper | Bal. acc. |",
-             "|-----|---------|--------|------|---------|-------|-------|------------|-----------|"]
+             "fitted inside each fold (no anatomical leakage). Mean over seeds; "
+             "seed SD = population SD of the seed means (not a CI); 95% CI = over the 16 "
+             "deficits (Giles's interval). Lower is better.", "",
+             "| Exp | Variant | Budget | Task | Channel | Folds | Seeds | PEHE paper (seed SD) | 95% CI over deficits | Bal. acc. |",
+             "|-----|---------|--------|------|---------|-------|-------|----------------------|----------------------|-----------|"]
     for r in board.itertuples():
+        ci = f"{r.pehe_paper_ci_low:.3f}–{r.pehe_paper_ci_high:.3f}" if np.isfinite(r.pehe_paper_ci_low) else "–"
         lines.append(f"| {r.eid} | {r.label} | {r.budget} | {r.task} | {r.channel} | {r.protocol} | {r.n_seeds} | "
-                     f"{r.pehe_paper_mean:.3f} ({r.pehe_paper_std:.3f}) | {r.balacc_mean:.3f} |")
+                     f"{r.pehe_paper_mean:.3f} ({r.pehe_paper_seed_sd:.3f}) | {ci} | {r.balacc_mean:.3f} |")
     with open(os.path.join(out_root, "leaderboard.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     return board
