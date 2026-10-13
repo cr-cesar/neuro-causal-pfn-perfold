@@ -27,7 +27,23 @@ def build(out_root: str):
     paths = glob.glob(os.path.join(out_root, "replica", "**", "replica_headline.csv"), recursive=True)
     if not paths:
         raise SystemExit(f"no replica_headline.csv under {out_root}/replica")
-    df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+    frames = []
+    for p in paths:
+        h = pd.read_csv(p)
+        # headlines written before the CI columns existed (or with an empty CI)
+        # are recomputed from the per-deficit results next to them, so that a
+        # leaderboard regenerated today carries the deficit CI for every cell
+        if "pehe_paper_ci_low" not in h.columns or not np.isfinite(h["pehe_paper_ci_low"]).all():
+            results = os.path.join(os.path.dirname(p), "replica_results.csv")
+            if os.path.isfile(results):
+                from neurocausalpfn.prior import giles_replica as gr
+                agg = gr.headline_row(pd.read_csv(results))
+                for k in ("pehe_paper_ci_low", "pehe_paper_ci_high", "pehe_paper_selected",
+                          "pehe_paper_selected_ci_low", "pehe_paper_selected_ci_high"):
+                    if k in agg:
+                        h[k] = agg[k]
+        frames.append(h)
+    df = pd.concat(frames, ignore_index=True)
     if "protocol" not in df.columns:
         df["protocol"] = "img"
     df["protocol"] = df["protocol"].fillna("img")
