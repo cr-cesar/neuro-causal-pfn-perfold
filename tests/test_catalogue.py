@@ -58,3 +58,14 @@ def test_cost_plan_counts():
     assert len(whole) == 36                                          # variants of E1..E11b
     assert sum(r["tasks"] for r in whole) == 36 * 30                 # x 3 seeds x 10 folds
     assert sum(len(r["encoders"]) for r in whole) == 62              # encoders per fold
+
+
+def test_plan_only_keeps_the_named_variants_and_rejects_typos():
+    import pytest
+    from ncpfold.plan import plan_rows, select_rows
+
+    rows = plan_rows(["E4", "E6", "E7b"], seeds=1, budget="published")
+    kept = select_rows(rows, ["E4[25+25]", "E6:0", "E7b"])
+    assert [r["label"] for r in kept] == ["E4[25+25]", "E6[fusion_mode=both]", "E7b"]
+    with pytest.raises(SystemExit):
+        select_rows(rows, ["E4[25+26]"])
