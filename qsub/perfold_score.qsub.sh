@@ -47,11 +47,18 @@ if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
 # Weights must be in ~/.cache/causalpfn (download once on a login node).
 if [ -n "${ESTIMATORS:-}" ]; then
     for e in ${ESTIMATORS}; do      # a checkpoint path that is not there: the training job failed
-        case "$e" in *.pt) [ -s "$e" ] || { echo "no estimator checkpoint $e" >&2; exit 100; } ;; esac
+        case "$e" in
+            *"{fold}"*.pt) for k in ${ONLY_FOLDS:-0 1 2 3 4 5 6 7 8 9}; do
+                               f="${e//\{fold\}/$k}"; [ -s "$f" ] || { echo "no estimator checkpoint $f" >&2; exit 100; }
+                           done ;;
+            *.pt) [ -s "$e" ] || { echo "no estimator checkpoint $e" >&2; exit 100; } ;;
+        esac
     done
     EXTRA+=(--estimators ${ESTIMATORS})
 fi
 if [ -n "${ONLY_ESTIMATORS:-}" ]; then EXTRA+=(--only-estimators); fi
+# ONLY_FOLDS="0 1" scores those folds alone (held-out folds of a pool experiment)
+if [ -n "${ONLY_FOLDS:-}" ]; then EXTRA+=(--only-folds ${ONLY_FOLDS}); fi
 # ENSEMBLE=1 also scores the seed ensemble of the folders sharing eid/label/
 # budget/channel (latents concatenated fold by fold, label <label>+x<n>);
 # ENSEMBLE_ONLY=1 skips the single seeds.

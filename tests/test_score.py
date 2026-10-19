@@ -97,3 +97,43 @@ def test_lookup_in_bracketed_variant_dir(tmp_path):
     assert lookup.n_folds == n_folds and rep_meta(rep)["eid"] == "E9"
     tr, te = all_folds(n, n_folds)[0]
     assert np.allclose(lookup(tr, te)[1], Z[te])
+
+
+def test_per_fold_estimator_dispatches_on_the_fold_the_lookup_served(tmp_path, monkeypatch):
+    import ncpfold.score as sc
+
+    n, n_folds = 30, 3
+    _write_rep(str(tmp_path / "rep"), n, n_folds)
+    lookup = fold_lookup(str(tmp_path / "rep"), n)
+    seen = []
+
+    class _FakePFN:
+        def __init__(self, path, **kw):
+            self.path = path
+
+        def __call__(self, Xtr, W, Y, Xte):
+            seen.append(self.path)
+            return np.full(len(Xte), 0.7), np.full(len(Xte), 0.2)
+
+    import neurocausalpfn.pfn.estimator as est
+    monkeypatch.setattr(est, "PFNEstimator", _FakePFN)
+    for k in range(n_folds):
+        (tmp_path / f"run_fold{k}").mkdir()
+        (tmp_path / f"run_fold{k}" / "pfn.pt").write_bytes(b"x")
+    pfe = sc.PerFoldEstimator(str(tmp_path / "run_fold{fold}" / "pfn.pt"))
+    folds = all_folds(n, n_folds)
+    for k in (2, 0, 1):                                    # any order: the lookup sets the fold
+        tr, te = folds[k]
+        lookup(tr, te)
+        p1, p0 = pfe(None, None, None, np.zeros((len(te), 4)))
+        assert seen[-1].endswith(f"run_fold{k}/pfn.pt") and p1.shape == (len(te),)
+    # a restricted test side (singles) still resolves to its stored fold
+    tr, te = folds[1]
+    lookup(tr, te[::2])
+    pfe(None, None, None, np.zeros((len(te[::2]), 4)))
+    assert seen[-1].endswith("run_fold1/pfn.pt")
+    with pytest.raises(ValueError):
+        sc.PerFoldEstimator("no_placeholder.pt")
+    sc.CURRENT["fold"] = -1
+    with pytest.raises(RuntimeError):
+        pfe(None, None, None, np.zeros((2, 4)))
