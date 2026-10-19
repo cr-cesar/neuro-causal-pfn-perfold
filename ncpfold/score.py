@@ -201,23 +201,20 @@ def rep_meta(rep_dir: str) -> Dict:
                 "task": str(z["task"]), "n_folds": int(z["n_folds"]), "budget": str(z["budget"])}
 
 
-def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
-               modality: str = "receptor", scenario_name: str = "ideal",
-               deficits=None, with_volume: bool = False, with_nmf: bool = False,
-               groups_csv: Optional[str] = None, test_singles: bool = False,
-               estimators: Sequence[str] = (), only_estimators: bool = False,
-               ensemble: bool = False, ensemble_only: bool = False,
-               only_folds: Optional[Sequence[int]] = None) -> List[Dict]:
-    """``estimators``: extra in-context estimators registered in the main
-    package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
-    weights, the design's Tier-4 evaluator; a checkpoint path, or one with
-    ``{fold}`` for one checkpoint per fold); they are scored next to the
-    logistic regression and extra trees on the same folds. ``only_folds``
-    scores those folds alone (held-out folds of a pool experiment); the
-    protocol and the output folder carry the fold list."""
-    import pandas as pd
-
-    classifiers = ["logistic_regression", "extra_trees"]
+def resolve_classifiers(classifiers: Optional[Sequence[str]], estimators: Sequence[str] = (),
+                        only_estimators: bool = False, warm_up: bool = True) -> List[str]:
+    """The replica's classifier list for a scoring: ``classifiers`` (default
+    logistic regression and extra trees; a name outside the built-ins is a
+    member of the tabular foundation-model panel, ``tabpfn`` / ``tabicl``,
+    registered through ``neurocausalpfn.pfn.panel`` and warmed up now so a
+    missing weight file fails before the scoring) followed by the in-context
+    ``estimators``; ``only_estimators`` keeps the estimators alone."""
+    base = list(classifiers) if classifiers else list(gr.BUILTIN_CLASSIFIERS)
+    panel_names = [c for c in base if c not in gr.BUILTIN_CLASSIFIERS]
+    if panel_names:
+        from neurocausalpfn.pfn.panel import register_panel
+        register_panel(panel_names, warm_up=warm_up)
+    names = []
     for name in estimators:
         if name == "causalpfn":
             from neurocausalpfn.pfn.estimator import CausalPFNEstimator
@@ -229,9 +226,33 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             gr.register_estimator("pfn", PFNEstimator(name)); name = "pfn"
         else:
             raise ValueError(f"unknown estimator {name!r}")
-        classifiers.append(name)
-    if only_estimators and estimators:
-        classifiers = classifiers[2:]        # the design's Tier 4: the fixed estimator alone
+        names.append(name)
+    if only_estimators and names:
+        return names                          # the design's Tier 4: the fixed estimator alone
+    return base + names
+
+
+def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
+               modality: str = "receptor", scenario_name: str = "ideal",
+               deficits=None, with_volume: bool = False, with_nmf: bool = False,
+               groups_csv: Optional[str] = None, test_singles: bool = False,
+               estimators: Sequence[str] = (), only_estimators: bool = False,
+               ensemble: bool = False, ensemble_only: bool = False,
+               only_folds: Optional[Sequence[int]] = None,
+               classifiers: Optional[Sequence[str]] = None) -> List[Dict]:
+    """``estimators``: extra in-context estimators registered in the main
+    package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
+    weights, the design's Tier-4 evaluator; a checkpoint path, or one with
+    ``{fold}`` for one checkpoint per fold); they are scored next to the
+    logistic regression and extra trees on the same folds. ``classifiers``
+    replaces that pair (``tabpfn``, ``tabicl``: the foundation-model panel,
+    scored one-model and two-model like the pair). ``only_folds`` scores
+    those folds alone (held-out folds of a pool experiment); the protocol and
+    the output folder carry the fold list."""
+    import pandas as pd
+
+    classifiers = resolve_classifiers(classifiers, estimators, only_estimators)
+    print("classifiers:", " ".join(classifiers), flush=True)
 
     groups = load_groups(groups_csv)
     dirs = modality_dirs(data_dir)
@@ -382,6 +403,10 @@ def main(argv=None):
                          "for one checkpoint per fold")
     ap.add_argument("--only-estimators", action="store_true",
                     help="score the --estimators alone (no logistic regression / extra trees)")
+    ap.add_argument("--classifiers", nargs="+", default=None,
+                    help="classifiers fitted per slice, one-model and two-model (default "
+                         "logistic_regression extra_trees); 'tabpfn' and 'tabicl' are the "
+                         "tabular foundation-model panel (separate venv, GPU)")
     ap.add_argument("--ensemble", action="store_true",
                     help="also score the seed ensemble of every group of --reps sharing "
                          "eid/label/budget/channel (latents concatenated fold by fold)")
@@ -399,7 +424,8 @@ def main(argv=None):
                with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
                test_singles=args.test_singles, estimators=args.estimators,
                only_estimators=args.only_estimators, ensemble=args.ensemble,
-               ensemble_only=args.ensemble_only, only_folds=args.only_folds)
+               ensemble_only=args.ensemble_only, only_folds=args.only_folds,
+               classifiers=args.classifiers)
 
 
 if __name__ == "__main__":

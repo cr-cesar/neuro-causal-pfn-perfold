@@ -137,3 +137,22 @@ def test_per_fold_estimator_dispatches_on_the_fold_the_lookup_served(tmp_path, m
     sc.CURRENT["fold"] = -1
     with pytest.raises(RuntimeError):
         pfe(None, None, None, np.zeros((2, 4)))
+
+
+def test_resolve_classifiers_registers_the_panel_and_keeps_the_estimator_order(monkeypatch):
+    import ncpfold.score as sc
+    from neurocausalpfn.prior import giles_replica as gr
+
+    registered = []
+    import neurocausalpfn.pfn.panel as panel
+    monkeypatch.setattr(panel, "register_panel",
+                        lambda names, **kw: registered.extend(names) or {})
+    monkeypatch.setattr(gr, "register_estimator", lambda name, fn: None)
+    assert sc.resolve_classifiers(None) == ["logistic_regression", "extra_trees"] and not registered
+    assert sc.resolve_classifiers(["tabpfn", "tabicl"]) == ["tabpfn", "tabicl"]
+    assert registered == ["tabpfn", "tabicl"]
+    monkeypatch.setattr(sc, "PerFoldEstimator", lambda path: path)
+    assert sc.resolve_classifiers(["extra_trees"], ["run/fold{fold}/pfn.pt"]) == ["extra_trees", "pfn"]
+    assert sc.resolve_classifiers(["tabicl"], ["run/fold{fold}/pfn.pt"], only_estimators=True) == ["pfn"]
+    with pytest.raises(ValueError):
+        sc.resolve_classifiers(None, ["something_else"])
