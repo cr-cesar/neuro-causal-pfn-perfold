@@ -65,3 +65,53 @@ def test_e7b_dmvae_fold(tiny_data, tmp_path):
     path = run_fold("E7b", None, None, seed=0, fold=2, data_dir=tiny_data, out_root=out,
                     n_folds=3, overrides=SMOKE_OVERRIDES, device="cpu")
     _check(path, 3, 2, dim=50 + 2 * 25, channel="both")   # shared 50 + private 25 x 2
+
+
+def test_local_runner_trains_a_fold_of_the_hashed_export(tiny_data, tmp_path):
+    """export -> plan --emit-local -> run_jobs.sh (main repo) -> perfold_train_local.sh:
+    the workstation path, end to end on the tiny cohort."""
+    import shutil
+    import subprocess
+    import sys
+
+    import neurocausalpfn
+    from neurocausalpfn.utils.hashing import load_salt
+
+    from ncpfold.export_hashed import export
+    from ncpfold.plan import main as plan_main
+
+    main_root = os.path.abspath(os.path.join(os.path.dirname(neurocausalpfn.__file__), "..", ".."))
+    runner = os.path.join(main_root, "scripts", "run_jobs.sh")
+    if not os.path.exists(runner):
+        pytest.skip("main repository scripts not available")
+    here = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    names = sorted(os.listdir(os.path.join(tiny_data, "disconnectomes")))
+    groups_csv = tmp_path / "groups.csv"
+    groups_csv.write_text("filename,group,rank\n" + "".join(f"{n},g{i},0\n" for i, n in enumerate(names)))
+    dst = tmp_path / "export"
+    export(tiny_data, str(groups_csv), str(dst), load_salt(str(tmp_path / "salt")), n_folds=3, scrub=False)
+    data = str(dst / os.path.basename(tiny_data)); table = str(dst / "fold_table.csv"); out = str(tmp_path / "out")
+    # a checkout of this repo with the runner scripts (outputs land there)
+    work = tmp_path / "perfold"; (work / "qsub").mkdir(parents=True)
+    shutil.copy(os.path.join(here, "qsub", "perfold_train_local.sh"), work / "qsub")
+    venv = tmp_path / "env" / "bin"; venv.mkdir(parents=True)
+    os.symlink(sys.executable, venv / "python")
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        plan_main(["--eids", "E7a", "--seeds", "1", "--n-folds", "3", "--emit-local",
+                   "--data-dir", data, "--out-root", out, "--groups", table])
+    lines = [ln for ln in buf.getvalue().splitlines() if "FOLD=2 " in ln]
+    assert len(lines) == 1
+    overrides = json.dumps(SMOKE_OVERRIDES).replace('"', '\\"')
+    jobs = tmp_path / "jobs.txt"
+    jobs.write_text(f'N_FOLDS=3 OVERRIDES="{overrides}" ' + lines[0] + "\n")
+    r = subprocess.run(["bash", runner, str(jobs)], cwd=tmp_path, capture_output=True, text=True,
+                       env={**os.environ, "WORKDIR": str(work), "VENV": str(tmp_path / "env"),
+                            "PYTHONPATH": here + os.pathsep + os.environ.get("PYTHONPATH", "")})
+    log = (work / "logs" / "1_e7ar0s0f2.log").read_text() if (work / "logs").exists() else ""
+    assert r.returncode == 0 and "ok 1" in r.stdout, r.stdout + r.stderr + log
+    z = np.load(os.path.join(out, "E7a", "E7a", "seed0", "folds", "fold2.npz"))
+    assert str(z["group_mode"]) == "giles" and len(z["files"]) == N_IMAGES
+    assert all(len(str(f)) == 23 for f in z["files"])            # 16 hex digits + .nii.gz: no raw name
+    assert "group table:" in log and "fold 2" in log

@@ -25,7 +25,8 @@ if [ -n "${GROUP_TABLE:-}" ]; then
     [ -f "$GROUP_TABLE" ] || { echo "group table not found: $GROUP_TABLE"; exit 1; }
     EXTRA+=(--groups "$GROUP_TABLE" --group-mode "${GROUP_MODE:-giles}")
 fi
+[ -n "${OVERRIDES:-}" ] && EXTRA+=(--overrides "$OVERRIDES")      # smoke knobs (tests only)
 echo "fold $FOLD | group table: ${GROUP_TABLE:-none (image-level folds)} | mode ${GROUP_MODE:-giles}"
 python -m ncpfold.perfold --eid "$EID" --run "${RUN:-0}" --seed "${SEED:-0}" --fold "$FOLD" \
-    --data-dir "${DATA_DIR:-data/Full data}" --out-root "${OUT:-outputs_perfold}" \
+    --n-folds "${N_FOLDS:-10}" --data-dir "${DATA_DIR:-data/Full data}" --out-root "${OUT:-outputs_perfold}" \
     --task "${TASK:-disconnectome}" --budget "${BUDGET:-chain}" ${EXTRA[@]+"${EXTRA[@]}"}
