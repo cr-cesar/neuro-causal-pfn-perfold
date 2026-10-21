@@ -69,3 +69,19 @@ def test_plan_only_keeps_the_named_variants_and_rejects_typos():
     assert [r["label"] for r in kept] == ["E4[25+25]", "E6[fusion_mode=both]", "E7b"]
     with pytest.raises(SystemExit):
         select_rows(rows, ["E4[25+26]"])
+
+
+def test_plan_emits_local_lines_for_the_sequential_runner(capsys):
+    from ncpfold.plan import main
+
+    main(["--eids", "E2", "--only", "E2:0", "--seeds", "2", "--n-folds", "3", "--emit-local",
+          "--emit-local-score", "--data-dir", "export/Full data", "--out-root", "out_x",
+          "--groups", "export/fold_table.csv"])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if not ln.startswith("#")]
+    train = [ln for ln in lines if "perfold_train_local.sh" in ln]
+    score = [ln for ln in lines if "ncpfold.score" in ln]
+    assert len(train) == 2 * 3 and len(score) == 2
+    assert train[0].startswith("JOBNAME=e2r0s0f0 EID=E2 RUN=0 SEED=0 BUDGET=chain DATA_DIR='export/Full data' "
+                               "OUT=out_x GROUP_TABLE=export/fold_table.csv GROUP_MODE=giles FOLD=0 bash")
+    assert "JOBNAME=score-e2r0s1" in score[1] and "--reps 'out_x/E2/E2[w_dice=0.1]/seed1/folds'" in score[1]
+    assert "--groups export/fold_table.csv --test-singles" in score[1]
