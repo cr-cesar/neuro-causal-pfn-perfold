@@ -42,6 +42,8 @@ GT="${GROUP_TABLE:-}"
 if [ -z "$GT" ] && [[ "${GROUPS:-}" == *[/.]* ]]; then GT="$GROUPS"; fi
 if [ -n "$GT" ]; then EXTRA+=(--groups "$GT"); fi
 if [ -n "${TEST_SINGLES:-}" ]; then EXTRA+=(--test-singles); fi
+# TEST_EXTRAS=1: the validation set (never-tested images in pseudo-folds)
+if [ -n "${TEST_EXTRAS:-}" ]; then EXTRA+=(--test-extras); fi
 # ESTIMATORS="causalpfn" adds the off-the-shelf CausalPFN (fixed weights, the
 # design's Tier-4 evaluator); a pfn.pt path adds our trained transformer.
 # Weights must be in ~/.cache/causalpfn (download once on a login node).

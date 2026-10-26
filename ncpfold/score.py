@@ -111,6 +111,18 @@ def fold_lookup(rep_dir: str, n: int):
         # side, rows of Zte picked by position
         key = owner.get(int(te_idx[0]))
         if key is None:
+            # validation extras (--test-extras): both sides lie inside one stored
+            # fold's TRAIN side (the never-tested images are train-only in every
+            # fold); the stored fold is the one whose train side holds every
+            # requested image, which is unique because the other folds' train
+            # sides lack the images they test
+            want = set(int(i) for i in tr_idx) | set(int(i) for i in te_idx)
+            for k2, (Ztr, Zte, tr, te) in by_key.items():
+                trs = set(int(i) for i in tr)
+                if want <= trs:
+                    pos = {int(i): p for p, i in enumerate(tr)}
+                    CURRENT["fold"] = fold_of[k2]
+                    return Ztr[[pos[int(i)] for i in tr_idx]], Ztr[[pos[int(i)] for i in te_idx]]
             sys.exit(f"{rep_dir}: no stored fold matches the requested split "
                      f"(different image listing, task or fold count?)")
         Ztr, Zte, tr, te = by_key[key]
@@ -176,6 +188,49 @@ def restrict_test(folds, mask: np.ndarray):
     return [(tr, te[mask[te]]) for tr, te in folds]
 
 
+def extras_mask(names: Sequence[str], groups) -> np.ndarray:
+    """True for the images that are never tested under the group-aware
+    protocol: a later acquisition (rank > 0), or a member of a group without
+    a rank-0 image; with an exported fold table, the rows whose fold is -1.
+    They train in every fold and are the validation set of the Phase-2
+    selection (the paper's rule: nothing is chosen on the tested patients)."""
+    if groups is None:
+        raise ValueError("the validation extras need the group table")
+    fold_of = getattr(groups, "folds", None)
+    if fold_of is not None:
+        return np.array([fold_of.get(nm, 0) < 0 for nm in names], dtype=bool)
+    has_rank0: Dict[str, bool] = {}
+    for nm in names:
+        g, rank = groups.get(nm, (f"__solo__{nm}", 0))
+        has_rank0[g] = has_rank0.get(g, False) or rank == 0
+    out = []
+    for nm in names:
+        g, rank = groups.get(nm, (f"__solo__{nm}", 0))
+        out.append(rank > 0 or not has_rank0[g])
+    return np.array(out, dtype=bool)
+
+
+def extras_folds(folds, mask: np.ndarray, names: Sequence[str]):
+    """Validation folds on the never-tested images: pseudo-fold k tests the
+    extras whose name hashes to k (fixed, independent of the listing order)
+    and trains on stored fold k's training side without them. Every extra is
+    tested exactly once; no tested image of the benchmark is ever a query."""
+    import hashlib
+
+    n_folds = len(folds)
+    bucket = {i: int(hashlib.sha1(str(names[i]).encode()).hexdigest(), 16) % n_folds
+              for i in np.flatnonzero(mask)}
+    out = []
+    for k, (tr, te) in enumerate(folds):
+        te_k = np.array(sorted(i for i, b in bucket.items() if b == k), dtype=int)
+        missing = [i for i in te_k if i not in set(int(j) for j in tr)]
+        if missing:
+            raise ValueError(f"{len(missing)} validation images are not in fold {k}'s training side")
+        tr_k = np.array(sorted(set(int(j) for j in tr) - set(int(i) for i in te_k)), dtype=int)
+        out.append((tr_k, te_k))
+    return out
+
+
 def cached_labels(files: Sequence[str], pairs, images_dir: str, modality: str, cache_dir: str):
     import pandas as pd
 
@@ -236,6 +291,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
                modality: str = "receptor", scenario_name: str = "ideal",
                deficits=None, with_volume: bool = False, with_nmf: bool = False,
                groups_csv: Optional[str] = None, test_singles: bool = False,
+               test_extras: bool = False,
                estimators: Sequence[str] = (), only_estimators: bool = False,
                ensemble: bool = False, ensemble_only: bool = False,
                only_folds: Optional[Sequence[int]] = None,
@@ -285,10 +341,15 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             sys.exit(f"{rep_dir} was trained on image-level folds; drop --groups")
         names = [os.path.basename(f) for f in files]
         folds = all_folds(len(files), n_folds, names=names, groups=groups, mode=gmode or "giles")
+        if test_singles and test_extras:
+            sys.exit("--test-singles and --test-extras are different test sets; pass one")
         if test_singles:
             # evaluate only single-acquisition patients: none of them was in the
             # training side of its fold's encoder, whatever the group mode
             folds = restrict_test(folds, singles_mask(names, groups))
+        if test_extras:
+            # the validation set: the never-tested images, in pseudo-folds
+            folds = extras_folds(folds, extras_mask(names, groups), names)
         fold_tag = ""
         if only_folds is not None:
             keep = sorted(set(int(k) for k in only_folds))
@@ -298,7 +359,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             fold_tag = "-f" + ",".join(str(k) for k in keep)
 
         channel = meta.get("channel", "primary")
-        protocol = (f"grp-{gmode}" if gmode else "img") + ("-singles" if test_singles else "") + fold_tag
+        suffix = "-singles" if test_singles else ("-extras" if test_extras else "")
+        protocol = (f"grp-{gmode}" if gmode else "img") + suffix + fold_tag
         name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}|{protocol}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
@@ -313,7 +375,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
 
         out_dir = os.path.join(out_root, "replica", meta["eid"],
                                str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}",
-                               channel + ("-singles" if test_singles else "") + fold_tag)
+                               channel + suffix + fold_tag)
         os.makedirs(out_dir, exist_ok=True)
         res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
         pd.DataFrame([row]).to_csv(os.path.join(out_dir, "replica_headline.csv"), index=False)
@@ -414,6 +476,10 @@ def main(argv=None):
                     help="with --ensemble: skip the single seeds")
     ap.add_argument("--only-folds", type=int, nargs="+", default=None,
                     help="score these folds only (e.g. the held-out folds of a pool experiment)")
+    ap.add_argument("--test-extras", action="store_true",
+                    help="validation set: the never-tested images (later acquisitions and groups "
+                         "without a rank-0 image), in pseudo-folds, trained on the stored fold's "
+                         "training side without them; needs --groups")
     ap.add_argument("--test-singles", action="store_true",
                     help="evaluate only patients with a single image (the paper's evaluation "
                          "set); training sides and stored folds unchanged, so no image of a "
@@ -422,7 +488,7 @@ def main(argv=None):
     score_reps(args.reps, args.data_dir, args.atlas_dir, args.out_root, modality=args.modality,
                scenario_name=args.scenario, deficits=args.deficits,
                with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
-               test_singles=args.test_singles, estimators=args.estimators,
+               test_singles=args.test_singles, test_extras=args.test_extras, estimators=args.estimators,
                only_estimators=args.only_estimators, ensemble=args.ensemble,
                ensemble_only=args.ensemble_only, only_folds=args.only_folds,
                classifiers=args.classifiers)

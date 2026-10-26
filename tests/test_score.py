@@ -156,3 +156,43 @@ def test_resolve_classifiers_registers_the_panel_and_keeps_the_estimator_order(m
     assert sc.resolve_classifiers(["tabicl"], ["run/fold{fold}/pfn.pt"], only_estimators=True) == ["pfn"]
     with pytest.raises(ValueError):
         sc.resolve_classifiers(None, ["something_else"])
+
+
+def test_validation_extras_are_served_from_the_training_side(tmp_path):
+    """--test-extras: the never-tested images form pseudo-folds; the lookup
+    serves both sides from the stored fold's Ztr, each extra tested once."""
+    from ncpfold.folds import GroupTable
+    from ncpfold.score import extras_folds, extras_mask
+
+    n, n_folds = 40, 4
+    names = [f"img{i:02d}" for i in range(n)]
+    # groups: images 0-29 single rank-0 patients; 30-37 later acquisitions of patients 0-7; 38-39 a group without rank 0
+    groups = GroupTable({names[i]: (f"g{i}", 0) for i in range(30)})
+    groups.update({names[30 + j]: (f"g{j}", 1) for j in range(8)})
+    groups.update({names[38]: ("gx", 1), names[39]: ("gx", 2)})
+    mask = extras_mask(names, groups)
+    assert mask.sum() == 10 and mask[30:].all() and not mask[:30].any()
+    # stored folds: KFold over the 30 primaries, extras train everywhere (giles mode)
+    folds = all_folds(n, n_folds, names=names, groups=groups, mode="giles")
+    rep = str(tmp_path / "rep"); os.makedirs(rep)
+    Z = np.random.default_rng(0).normal(size=(n, 3)).astype(np.float32)
+    for k, (tr, te) in enumerate(folds):
+        np.savez(os.path.join(rep, f"fold{k}.npz"), Ztr=Z[tr], Zte=Z[te], tr_idx=tr, te_idx=te,
+                 files=np.array(names), fold=k, n_folds=n_folds, dim=3)
+    vfolds = extras_folds(folds, mask, names)
+    tested = np.concatenate([te for _, te in vfolds])
+    assert sorted(tested.tolist()) == list(range(30, 40))             # every extra once
+    for (tr, te), (tr0, te0) in zip(vfolds, folds):
+        assert not (set(te.tolist()) & set(te0.tolist()))               # no benchmark test image is a query
+        assert set(te.tolist()) <= set(tr0.tolist()) and set(tr.tolist()) <= set(tr0.tolist())
+    lookup = fold_lookup(rep, n)
+    for tr, te in vfolds:
+        if len(te) == 0:
+            continue
+        Ztr, Zte = lookup(tr, te)
+        np.testing.assert_array_equal(Ztr, Z[tr]); np.testing.assert_array_equal(Zte, Z[te])
+    with pytest.raises(ValueError):
+        extras_mask(names, None)
+    # an exported fold table marks the extras with fold -1
+    gt = GroupTable(groups); gt.folds = {nm: (-1 if mask[i] else i % n_folds) for i, nm in enumerate(names)}
+    np.testing.assert_array_equal(extras_mask(names, gt), mask)
