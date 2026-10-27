@@ -179,9 +179,11 @@ def test_validation_extras_are_served_from_the_training_side(tmp_path):
     for k, (tr, te) in enumerate(folds):
         np.savez(os.path.join(rep, f"fold{k}.npz"), Ztr=Z[tr], Zte=Z[te], tr_idx=tr, te_idx=te,
                  files=np.array(names), fold=k, n_folds=n_folds, dim=3)
-    vfolds = extras_folds(folds, mask, names)
+    vfolds = extras_folds(folds, mask, names, groups)
     tested = np.concatenate([te for _, te in vfolds])
     assert sorted(tested.tolist()) == list(range(30, 40))             # every extra once
+    # folds by patient: the two images of group gx (38, 39) land in the same pseudo-fold
+    assert any({38, 39} <= set(te.tolist()) for _, te in vfolds)
     for (tr, te), (tr0, te0) in zip(vfolds, folds):
         assert not (set(te.tolist()) & set(te0.tolist()))               # no benchmark test image is a query
         assert set(te.tolist()) <= set(tr0.tolist()) and set(tr.tolist()) <= set(tr0.tolist())

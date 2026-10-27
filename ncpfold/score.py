@@ -237,15 +237,22 @@ def extras_mask(names: Sequence[str], groups) -> np.ndarray:
     return np.array(out, dtype=bool)
 
 
-def extras_folds(folds, mask: np.ndarray, names: Sequence[str]):
+def extras_folds(folds, mask: np.ndarray, names: Sequence[str], groups=None):
     """Validation folds on the never-tested images: pseudo-fold k tests the
-    extras whose name hashes to k (fixed, independent of the listing order)
-    and trains on stored fold k's training side without them. Every extra is
-    tested exactly once; no tested image of the benchmark is ever a query."""
+    extras whose PATIENT (group) hashes to k, so a patient's images never sit
+    on both sides of a pseudo-fold; without a table the image name is the
+    unit. Training side = stored fold k's training side without them. Every
+    extra is tested exactly once; no tested image of the benchmark is ever a
+    query."""
     import hashlib
 
     n_folds = len(folds)
-    bucket = {i: int(hashlib.sha1(str(names[i]).encode()).hexdigest(), 16) % n_folds
+
+    def unit(i):
+        nm = str(names[i])
+        return str(groups[nm][0]) if groups is not None and nm in groups else nm
+
+    bucket = {i: int(hashlib.sha1(unit(i).encode()).hexdigest(), 16) % n_folds
               for i in np.flatnonzero(mask)}
     out = []
     for k, (tr, te) in enumerate(folds):
@@ -374,7 +381,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             folds = restrict_test(folds, singles_mask(names, groups))
         if test_extras:
             # the validation set: the never-tested images, in pseudo-folds
-            folds = extras_folds(folds, extras_mask(names, groups), names)
+            folds = extras_folds(folds, extras_mask(names, groups), names, groups)
         fold_tag = ""
         if only_folds is not None:
             keep = sorted(set(int(k) for k in only_folds))
