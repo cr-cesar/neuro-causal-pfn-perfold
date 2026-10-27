@@ -196,3 +196,25 @@ def test_validation_extras_are_served_from_the_training_side(tmp_path):
     # an exported fold table marks the extras with fold -1
     gt = GroupTable(groups); gt.folds = {nm: (-1 if mask[i] else i % n_folds) for i, nm in enumerate(names)}
     np.testing.assert_array_equal(extras_mask(names, gt), mask)
+
+
+def test_seed_ensemble_of_pfn_checkpoints_averages_potential_outcomes(monkeypatch, tmp_path):
+    """'a.pt+b.pt' registers one estimator whose mu1 / mu0 are the members' means."""
+    import ncpfold.score as sc
+
+    class _Fake:
+        def __init__(self, path, **kw):
+            self.v = float(os.path.basename(path)[1])
+        def __call__(self, Xtr, W, Y, Xte):
+            n = len(Xte)
+            return np.full(n, self.v), np.full(n, -self.v)
+
+    import neurocausalpfn.pfn.estimator as est
+    monkeypatch.setattr(est, "PFNEstimator", _Fake)
+    e = sc.make_pfn_estimator("p1.pt+p3.pt")
+    assert isinstance(e, sc.EnsembleEstimator) and len(e.members) == 2
+    mu1, mu0 = e(None, None, None, np.zeros((4, 2)))
+    np.testing.assert_allclose(mu1, 2.0); np.testing.assert_allclose(mu0, -2.0)
+    assert isinstance(sc.make_pfn_estimator("p2.pt"), _Fake)
+    e2 = sc.make_pfn_estimator("outputs/a/fold{fold}/pfn.pt+outputs/b/fold{fold}/pfn.pt")
+    assert all(isinstance(m, sc.PerFoldEstimator) for m in e2.members)

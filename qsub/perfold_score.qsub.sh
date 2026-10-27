@@ -48,13 +48,15 @@ if [ -n "${TEST_EXTRAS:-}" ]; then EXTRA+=(--test-extras); fi
 # design's Tier-4 evaluator); a pfn.pt path adds our trained transformer.
 # Weights must be in ~/.cache/causalpfn (download once on a login node).
 if [ -n "${ESTIMATORS:-}" ]; then
-    for e in ${ESTIMATORS}; do      # a checkpoint path that is not there: the training job failed
+    for spec in ${ESTIMATORS}; do   # a checkpoint path that is not there: the training job failed
+      for e in ${spec//+/ }; do     # members of a seed ensemble are joined by '+'
         case "$e" in
             *"{fold}"*.pt) for k in ${ONLY_FOLDS:-0 1 2 3 4 5 6 7 8 9}; do
                                f="${e//\{fold\}/$k}"; [ -s "$f" ] || { echo "no estimator checkpoint $f" >&2; exit 100; }
                            done ;;
             *.pt) [ -s "$e" ] || { echo "no estimator checkpoint $e" >&2; exit 100; } ;;
         esac
+      done
     done
     EXTRA+=(--estimators ${ESTIMATORS})
 fi

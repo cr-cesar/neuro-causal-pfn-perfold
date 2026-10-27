@@ -78,6 +78,33 @@ class PerFoldEstimator:
         return self.loaded[fold](Xtr, W, Y, Xte)
 
 
+class EnsembleEstimator:
+    """Several trained Neuro-Causal-PFNs read the same context; their
+    potential-outcome predictions are averaged (the seed ensemble of the
+    model, 27 Oct). Members are checkpoint paths joined by '+', each with or
+    without '{fold}'."""
+
+    def __init__(self, members):
+        self.members = list(members)
+        self.name = "pfn"
+
+    def __call__(self, Xtr, W, Y, Xte):
+        outs = [m(Xtr, W, Y, Xte) for m in self.members]
+        mu1 = np.mean([np.asarray(o[0], dtype=float) for o in outs], axis=0)
+        mu0 = np.mean([np.asarray(o[1], dtype=float) for o in outs], axis=0)
+        return mu1, mu0
+
+
+def make_pfn_estimator(spec: str):
+    """A trained-PFN estimator from a spec: a checkpoint path, one with
+    '{fold}' (one checkpoint per fold), or several joined by '+' (averaged)."""
+    from neurocausalpfn.pfn.estimator import PFNEstimator
+
+    parts = [p for p in spec.split("+") if p]
+    members = [PerFoldEstimator(p) if "{fold}" in p else PFNEstimator(p) for p in parts]
+    return members[0] if len(members) == 1 else EnsembleEstimator(members)
+
+
 def fold_lookup(rep_dir: str, n: int):
     """``(tr_idx, te_idx) -> (Ztr, Zte)`` from the folder's fold*.npz, matched
     to the replica's folds by their test indices (never by call order).
@@ -274,11 +301,9 @@ def resolve_classifiers(classifiers: Optional[Sequence[str]], estimators: Sequen
         if name == "causalpfn":
             from neurocausalpfn.pfn.estimator import CausalPFNEstimator
             gr.register_estimator("causalpfn", CausalPFNEstimator())
-        elif name.endswith(".pt") and "{fold}" in name:
-            gr.register_estimator("pfn", PerFoldEstimator(name)); name = "pfn"
         elif name.endswith(".pt"):
-            from neurocausalpfn.pfn.estimator import PFNEstimator
-            gr.register_estimator("pfn", PFNEstimator(name)); name = "pfn"
+            # a checkpoint, one per fold ({fold}), or several joined by '+' (seed ensemble)
+            gr.register_estimator("pfn", make_pfn_estimator(name)); name = "pfn"
         else:
             raise ValueError(f"unknown estimator {name!r}")
         names.append(name)
