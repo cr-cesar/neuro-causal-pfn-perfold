@@ -36,7 +36,8 @@ SCENARIO="${SCENARIO:-ideal}"
 EXTRA=()
 if [ -n "${WITH_VOLUME:-}" ]; then EXTRA+=(--with-volume); fi
 if [ -n "${WITH_NMF:-}" ]; then EXTRA+=(--with-nmf); fi
-if [ -n "${WITH_NMF_LESION:-}" ]; then EXTRA+=(--with-nmf-lesion); fi
+# REF_TASK=lesion|disconnectome: the condition of the volume/NMF reference points
+if [ -n "${REF_TASK:-}" ]; then EXTRA+=(--ref-task "${REF_TASK}"); fi
 # GROUP_TABLE=<filename,group,rank csv>; GROUPS still accepted when it holds a
 # path (bash pre-defines GROUPS as the caller's numeric group ids).
 GT="${GROUP_TABLE:-}"
