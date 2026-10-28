@@ -430,7 +430,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             ref_protocol += "-singles"
         reps: Dict = {}
         if with_volume:
-            v = labels["vol"].to_numpy(dtype=float)
+            v = _lesion_volumes(ref_names, dirs)
             reps["volume"] = v[:, None] / max(v.max(), 1.0)
         if with_nmf:
             reps["nmf50_perfold"] = _nmf_perfold(files)
@@ -448,6 +448,21 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             print(f"  {name}: PEHE paper {row.get('pehe_paper_mean', float('nan')):.3f}")
             summaries.append(row)
     return summaries
+
+
+def _lesion_volumes(names: Sequence[str], dirs: Dict[str, str]) -> np.ndarray:
+    """Voxel count of each image's lesion mask (the file of the same name under
+    the lesions folder), binarised as the replica binarises its inputs. The
+    volume baseline is the lesion's whichever task the folds come from; a
+    disconnectome's suprathreshold extent is a different quantity."""
+    import nibabel as nib
+
+    masks = {os.path.basename(p): p for p in list_images(dirs["lesions"])}
+    missing = [nm for nm in names if nm not in masks]
+    if missing:
+        raise KeyError(f"{len(missing)} images have no lesion mask of the same name")
+    return np.array([float((np.asarray(nib.load(masks[nm]).dataobj) > gr.DISCO_THRESH).sum())
+                     for nm in names])
 
 
 def _nmf_perfold(files):
@@ -487,7 +502,7 @@ def main(argv=None):
     ap.add_argument("--modality", default="receptor", choices=["receptor", "genetics"])
     ap.add_argument("--scenario", default="ideal", choices=sorted(gr.HEADLINE_SCENARIOS))
     ap.add_argument("--deficits", type=int, nargs="*", default=None)
-    ap.add_argument("--with-volume", action="store_true", help="also score the volume baseline")
+    ap.add_argument("--with-volume", action="store_true", help="also score the lesion-volume baseline (voxels of each lesion mask)")
     ap.add_argument("--with-nmf", action="store_true", help="also score per-fold NMF-50 (slow)")
     ap.add_argument("--groups", default=None,
                     help="the same filename,group,rank CSV the folds were trained with")
