@@ -80,9 +80,14 @@ def oracle_rows(Ztr, Zte, Atr, Ate, tau_tr, tau_te, hits_tr, groups_tr, seed: in
         if len(np.unique(y)) < 2 or n_groups < 3:
             out[f"auc_probe_{key}"] = float("nan"); continue
         cv = GroupKFold(n_splits=min(5, n_groups))
-        p = cross_val_predict(LogisticRegression(max_iter=2000, C=1.0), Ztr, y, cv=cv, groups=groups_tr,
-                              method="predict_proba")[:, 1]
-        out[f"auc_probe_{key}"] = float(roc_auc_score(y, p))
+        try:
+            # a cross-validation split may hold one class only (nearly every
+            # training patient covers the half); the probe is then undefined
+            p = cross_val_predict(LogisticRegression(max_iter=2000, C=1.0), Ztr, y, cv=cv, groups=groups_tr,
+                                  method="predict_proba")[:, 1]
+            out[f"auc_probe_{key}"] = float(roc_auc_score(y, p))
+        except ValueError:
+            out[f"auc_probe_{key}"] = float("nan")
     return out
 
 

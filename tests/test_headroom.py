@@ -31,3 +31,13 @@ def test_oracles_recover_a_linear_truth_and_probe_the_hits():
     # too few rows: only the counts
     small = oracle_rows(Z[:5], Z[te], None, None, tau[:5], tau[te], {}, groups[:5])
     assert set(small) == {"n_train", "n_test", "share_zero_test"}
+
+
+def test_probe_is_nan_when_a_split_holds_one_class():
+    rng = np.random.default_rng(1)
+    n = 60
+    Z = rng.normal(size=(n, 4)); tau = rng.choice([-1.0, 0.0, 1.0], size=n)
+    hits = {"W1": np.r_[np.ones(58, int), 0, 0]}        # two negatives only: some folds see one class
+    groups = np.arange(n)
+    r = oracle_rows(Z[:50], Z[50:], None, None, tau[:50], tau[50:], {"W1": hits["W1"][:50]}, groups[:50])
+    assert "pehe_latent_hgb" in r and np.isnan(r["auc_probe_W1"])
