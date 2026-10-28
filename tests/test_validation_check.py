@@ -113,6 +113,28 @@ def test_cli_writes_one_split_and_keeps_the_other(tmp_path):
     assert (df["split"] == "receptor").sum() == 5     # ranking + 4 estimators, not duplicated
 
 
+def test_a_root_under_two_tags_is_refused(tmp_path):
+    root = tmp_path / "base"
+    _write(root, "logistic_regression", "s_learner", np.full(len(DEFICITS), 0.3))
+    _write(root, "causalpfn", "in_context", np.full(len(DEFICITS), 0.35))
+    with pytest.raises(SystemExit, match="more than one tag"):
+        load_side([("lr", str(root)), ("causalpfn", str(root) + "/")])
+    one = load_side([("base", str(root))])
+    assert sorted(one["estimator"].unique()) == ["base:causalpfn/in_context", "logistic_regression/s_learner"]
+
+
+def test_two_scorings_on_one_side_are_refused(tmp_path):
+    root = tmp_path / "val"
+    _write(root, "logistic_regression", "s_learner", np.full(len(DEFICITS), 0.3))
+    old = root / "replica" / "E1" / "E1" / "seed0" / "old"
+    old.mkdir(parents=True)
+    pd.DataFrame([{"representation": "E1|E1|seed0|chain|primary|grp-giles", "deficit": d, "fold": 0,
+                   "classifier": "pfn", "learner": "in_context", "pehe_paper": 0.4}
+                  for d in DEFICITS]).to_csv(old / "replica_results.csv", index=False)
+    with pytest.raises(SystemExit, match="several scorings"):
+        load_side([("val", str(root))])
+
+
 def test_sources_need_tags():
     assert parse_sources(["a=x/y"]) == [("a", "x/y")]
     with pytest.raises(ValueError):
