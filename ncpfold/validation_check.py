@@ -62,9 +62,18 @@ def load_side(sources: Sequence[Tuple[str, str]], eid: Optional[str] = None,
     """One side's per-fold rows as ``estimator, seed, deficit, pehe_paper``.
 
     A built-in cell found under several roots is read from the first one only
-    (the same cells are rewritten by every scoring of the representation)."""
+    (the same cells are rewritten by every scoring of the representation).
+    A root may be named once only (under two tags its in-context estimators
+    would count twice), and the side must hold one scoring of the
+    representation: one budget, channel and protocol, so that an old scoring
+    left in a root (other folds, other test set) is never averaged in."""
     import pandas as pd
 
+    roots = [os.path.normpath(os.path.expanduser(r)) for _, r in sources]
+    repeated = sorted({r for r in roots if roots.count(r) > 1})
+    if repeated:
+        raise SystemExit(f"{len(repeated)} root(s) named under more than one tag; "
+                         "give each root a single tag")
     frames, seen_builtin = [], set()
     for tag, root in sources:
         paths = sorted(glob.glob(os.path.join(glob.escape(root), "replica", "**", "replica_results.csv"),
@@ -79,7 +88,8 @@ def load_side(sources: Sequence[Tuple[str, str]], eid: Optional[str] = None,
             df = df[df["classifier"].fillna("").astype(str) != ""]
             parts = df["representation"].astype(str).str.split("|")
             df = df.assign(eid=parts.str[0], label=parts.str[1],
-                           seed=parts.str[2].str.extract(r"seed(\d+)", expand=False).astype(float))
+                           seed=parts.str[2].str.extract(r"seed(\d+)", expand=False).astype(float),
+                           scoring=parts.str[3:].str.join("|"))
             if eid is not None:
                 df = df[df["eid"] == eid]
             if label is not None:
@@ -98,6 +108,10 @@ def load_side(sources: Sequence[Tuple[str, str]], eid: Optional[str] = None,
     reps = pd.concat(frames, ignore_index=True)
     if reps[["eid", "label"]].drop_duplicates().shape[0] > 1:
         raise SystemExit("several representations on one side; pass --eid and --label")
+    scorings = sorted(reps["scoring"].unique())
+    if len(scorings) > 1:
+        raise SystemExit("several scorings of the representation on one side (budget|channel|protocol: "
+                         + ", ".join(scorings) + "); keep one per root")
     return reps[["estimator", "builtin", "seed", "deficit", "pehe_paper"]]
 
 
