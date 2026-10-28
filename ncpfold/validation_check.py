@@ -115,7 +115,7 @@ def _spearman(a: np.ndarray, b: np.ndarray) -> float:
 
     if np.ptp(a) == 0 or np.ptp(b) == 0:
         return float("nan")
-    return float(spearmanr(a, b).statistic)
+    return float(spearmanr(a, b)[0])          # [0]: works before and after scipy 1.9 (.statistic)
 
 
 def check(val, test, split: str, builtin: str = "best", n_boot: int = 2000,
