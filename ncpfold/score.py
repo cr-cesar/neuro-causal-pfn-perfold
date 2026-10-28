@@ -322,6 +322,7 @@ def resolve_classifiers(classifiers: Optional[Sequence[str]], estimators: Sequen
 def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
                modality: str = "receptor", scenario_name: str = "ideal",
                deficits=None, with_volume: bool = False, with_nmf: bool = False,
+               with_nmf_lesion: bool = False,
                groups_csv: Optional[str] = None, test_singles: bool = False,
                test_extras: bool = False,
                estimators: Sequence[str] = (), only_estimators: bool = False,
@@ -416,7 +417,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
               f"{agg['n_deficits']} deficits) -> {out_dir}")
         summaries.append(row)
 
-    if with_volume or with_nmf:
+    if with_volume or with_nmf or with_nmf_lesion:
         # reference points on the same folds, task = first rep's task
         task = next(iter(files_by_task))
         files, labels = files_by_task[task], labels_by_task[task]
@@ -434,6 +435,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             reps["volume"] = v[:, None] / max(v.max(), 1.0)
         if with_nmf:
             reps["nmf50_perfold"] = _nmf_perfold(files)
+        if with_nmf_lesion:
+            reps["nmf50_lesion_perfold"] = _nmf_perfold(_lesion_masks(ref_names, dirs))
         for name, Z in reps.items():
             res = gr.evaluate_representation(Z, labels, pairs, scenario, n_folds=10, folds=ref_folds)
             res.insert(0, "representation", name)
@@ -450,19 +453,25 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
     return summaries
 
 
-def _lesion_volumes(names: Sequence[str], dirs: Dict[str, str]) -> np.ndarray:
-    """Voxel count of each image's lesion mask (the file of the same name under
-    the lesions folder), binarised as the replica binarises its inputs. The
-    volume baseline is the lesion's whichever task the folds come from; a
-    disconnectome's suprathreshold extent is a different quantity."""
-    import nibabel as nib
-
+def _lesion_masks(names: Sequence[str], dirs: Dict[str, str]) -> List[str]:
+    """The lesion mask of each image: the file of the same name under the
+    lesions folder, in the order of ``names``."""
     masks = {os.path.basename(p): p for p in list_images(dirs["lesions"])}
     missing = [nm for nm in names if nm not in masks]
     if missing:
         raise KeyError(f"{len(missing)} images have no lesion mask of the same name")
-    return np.array([float((np.asarray(nib.load(masks[nm]).dataobj) > gr.DISCO_THRESH).sum())
-                     for nm in names])
+    return [masks[nm] for nm in names]
+
+
+def _lesion_volumes(names: Sequence[str], dirs: Dict[str, str]) -> np.ndarray:
+    """Voxel count of each image's lesion mask, binarised as the replica
+    binarises its inputs. The volume baseline is the lesion's whichever task
+    the folds come from; a disconnectome's suprathreshold extent is a
+    different quantity."""
+    import nibabel as nib
+
+    return np.array([float((np.asarray(nib.load(p).dataobj) > gr.DISCO_THRESH).sum())
+                     for p in _lesion_masks(names, dirs)])
 
 
 def _nmf_perfold(files):
@@ -504,6 +513,8 @@ def main(argv=None):
     ap.add_argument("--deficits", type=int, nargs="*", default=None)
     ap.add_argument("--with-volume", action="store_true", help="also score the lesion-volume baseline (voxels of each lesion mask)")
     ap.add_argument("--with-nmf", action="store_true", help="also score per-fold NMF-50 (slow)")
+    ap.add_argument("--with-nmf-lesion", action="store_true",
+                    help="also score per-fold NMF-50 of the lesion masks (same folds and labels; slow)")
     ap.add_argument("--groups", default=None,
                     help="the same filename,group,rank CSV the folds were trained with")
     ap.add_argument("--estimators", nargs="*", default=[],
@@ -534,7 +545,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     score_reps(args.reps, args.data_dir, args.atlas_dir, args.out_root, modality=args.modality,
                scenario_name=args.scenario, deficits=args.deficits,
-               with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
+               with_volume=args.with_volume, with_nmf=args.with_nmf,
+               with_nmf_lesion=args.with_nmf_lesion, groups_csv=args.groups,
                test_singles=args.test_singles, test_extras=args.test_extras, estimators=args.estimators,
                only_estimators=args.only_estimators, ensemble=args.ensemble,
                ensemble_only=args.ensemble_only, only_folds=args.only_folds,
