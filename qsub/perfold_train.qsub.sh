@@ -30,6 +30,9 @@ set -euo pipefail
 
 module load python3/3.11
 source ~/venvs/neuro/bin/activate
+# audit F25: the same config and seed ran 2.4x slower on another node, so
+# every job states where it ran
+echo "node: $(hostname -s) gpu: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo none) job: ${JOB_ID:-?}"
 
 EID="${EID:?set EID, e.g. -v EID=E5,RUN=0,SEED=0}"
 RUN="${RUN:-0}"
