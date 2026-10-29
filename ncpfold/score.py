@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import inspect
 import json
 import os
 import sys
@@ -387,13 +388,18 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         if test_extras:
             # the validation set: the never-tested images, in pseudo-folds
             folds = extras_folds(folds, extras_mask(names, groups), names, groups)
-        fold_tag = ""
+        fold_tag, fold_kw = "", {}
         if only_folds is not None:
             keep = sorted(set(int(k) for k in only_folds))
             if any(k < 0 or k >= len(folds) for k in keep):
                 sys.exit(f"--only-folds {keep}: the representation has {len(folds)} folds")
             folds = [folds[k] for k in keep]
             fold_tag = "-f" + ",".join(str(k) for k in keep)
+            # each kept fold keeps its real index: it seeds the fold's virtual
+            # trial and fills the fold column, as in the full run
+            if "fold_ids" not in inspect.signature(gr.evaluate_representation).parameters:
+                sys.exit("--only-folds needs a main package whose evaluate_representation takes fold_ids")
+            fold_kw = {"fold_ids": keep}
 
         channel = meta.get("channel", "primary")
         suffix = "-singles" if test_singles else ("-extras" if test_extras else "")
@@ -402,7 +408,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
                                          n_folds=n_folds, deficits=deficits, folds=folds,
-                                         classifiers=classifiers)
+                                         classifiers=classifiers, **fold_kw)
         res.insert(0, "representation", name)
         agg = gr.headline_row(res)
         row = {"representation": name, "eid": meta["eid"], "label": meta["label"],
