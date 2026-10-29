@@ -16,7 +16,7 @@ from __future__ import annotations
 import glob
 import json
 import os
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -34,6 +34,53 @@ def basenames(paths: Sequence[str]) -> List[str]:
     return [os.path.basename(p) for p in paths]
 
 
+class GroupTable(dict):
+    """``filename -> (group, rank)``; ``folds`` is ``filename -> fold`` when the
+    CSV also carries a ``fold`` column (a fold table exported with
+    ``ncpfold.export_hashed``: membership is then fixed by name, so a listing
+    under other names, e.g. hashed ones on another machine, keeps the exact
+    folds of the cluster; -1 marks an image that is never tested)."""
+    folds: Optional[Dict[str, int]] = None
+
+
+def fixed_folds(names: Sequence[str], groups: GroupTable, n_folds: int = N_FOLDS,
+                mode: str = "giles") -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Folds read from the table's ``fold`` column (test side = the images of
+    fold k); the training side follows ``mode`` exactly as ``group_folds``:
+    'giles' trains every other image, 'strict' keeps a later acquisition out
+    of the fold that tests its group's earliest image."""
+    if mode not in ("giles", "strict"):
+        raise ValueError("mode must be 'giles' or 'strict'")
+    fold_of = groups.folds or {}
+    missing = [nm for nm in names if nm not in fold_of]
+    if missing:
+        raise KeyError(f"{len(missing)} files missing from the fold table")
+    primary_fold, extras = {}, {}
+    for i, nm in enumerate(names):
+        g, rank = groups[nm]
+        k = fold_of[nm]
+        if (rank == 0) != (k >= 0):
+            raise ValueError(f"fold table inconsistent at row {i}: rank {rank} with fold {k}")
+        if k >= n_folds:
+            raise ValueError(f"fold table has fold {k} but {n_folds} folds were requested")
+        if k >= 0:
+            primary_fold[i] = (g, k)
+        else:
+            extras.setdefault(g, []).append(i)
+    tested_fold = {g: k for g, k in primary_fold.values()}
+    folds = []
+    for k in range(n_folds):
+        te = [i for i, (_, kk) in primary_fold.items() if kk == k]
+        if not te:
+            raise ValueError(f"fold table has no test image for fold {k}")
+        tr = [i for i, (_, kk) in primary_fold.items() if kk != k]
+        for g, lst in extras.items():
+            if mode == "giles" or tested_fold.get(g, -1) != k:
+                tr += lst
+        folds.append((np.array(sorted(tr)), np.array(sorted(te))))
+    return folds
+
+
 def all_folds(n: int, n_folds: int = N_FOLDS, names: Optional[Sequence[str]] = None,
               groups: Optional[Dict[str, Tuple[str, int]]] = None,
               mode: str = "giles") -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -41,13 +88,16 @@ def all_folds(n: int, n_folds: int = N_FOLDS, names: Optional[Sequence[str]] = N
     group-aware folds of ``neurocausalpfn.prior.giles_replica.group_folds``
     (only each group's earliest image is tested; ``mode`` places the later
     acquisitions: 'giles' = train in every fold, 'strict' = follow their
-    group). One definition shared with the replica scorer."""
+    group). One definition shared with the replica scorer. A table with a
+    ``fold`` column fixes the membership by name instead (:func:`fixed_folds`)."""
     from neurocausalpfn.prior.giles_replica import group_folds, image_folds
 
     if groups is None:
         return image_folds(n, n_folds, seed=FOLD_SEED)
     if names is None or len(names) != n:
         raise ValueError("group-aware folds need the file names of the listing")
+    if getattr(groups, "folds", None) is not None:
+        return fixed_folds(list(names), groups, n_folds=n_folds, mode=mode)
     return group_folds(list(names), groups, n_folds=n_folds, seed=FOLD_SEED, mode=mode)
 
 
@@ -58,13 +108,21 @@ def fold_indices(n: int, fold: int, n_folds: int = N_FOLDS, names=None, groups=N
     return all_folds(n, n_folds, names=names, groups=groups, mode=mode)[fold]
 
 
-def load_groups(path: Optional[str]):
-    """``filename -> (group, rank)`` from a filename,group,rank CSV, or None."""
+def load_groups(path: Optional[str]) -> Optional[GroupTable]:
+    """``filename -> (group, rank)`` from a filename,group,rank CSV, or None.
+    A ``fold`` column, when present, is kept as ``.folds`` (fixed membership)."""
     if not path:
         return None
+    import csv
+
     from neurocausalpfn.prior.giles_replica import load_group_table
 
-    return load_group_table(path)
+    table = GroupTable(load_group_table(path))
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames and "fold" in reader.fieldnames:
+            table.folds = {os.path.basename(r["filename"]): int(r["fold"]) for r in reader}
+    return table
 
 
 def modality_dirs(data_dir: str) -> Dict[str, str]:

@@ -45,20 +45,55 @@ from neurocausalpfn.prior import giles_replica as gr
 from .folds import all_folds, list_images, load_groups, modality_dirs, task_dir
 
 
+# the fold whose latents the lookup served last: the replica calls the lookup
+# once per fold before scoring it, so a per-fold estimator reads its fold here
+CURRENT: Dict[str, int] = {"fold": -1}
+
+
+class PerFoldEstimator:
+    """One trained Neuro-Causal-PFN per fold (``{fold}`` in the checkpoint
+    path): PFN k, pre-trained on a pool that excludes fold k's test patients,
+    scores fold k only. Checkpoints are loaded on first use."""
+
+    def __init__(self, pattern: str, **kw):
+        if "{fold}" not in pattern:
+            raise ValueError("a per-fold estimator needs '{fold}' in its checkpoint path")
+        self.pattern, self.kw, self.loaded = pattern, kw, {}
+        self.name = "pfn"
+
+    def path(self, fold: int) -> str:
+        return self.pattern.replace("{fold}", str(fold))
+
+    def __call__(self, Xtr, W, Y, Xte):
+        from neurocausalpfn.pfn.estimator import PFNEstimator
+
+        fold = CURRENT["fold"]
+        if fold < 0:
+            raise RuntimeError("per-fold estimator called before any fold lookup")
+        if fold not in self.loaded:
+            path = self.path(fold)
+            if not os.path.exists(path):
+                sys.exit(f"no checkpoint for fold {fold}: {path}")
+            self.loaded = {fold: PFNEstimator(path, **self.kw)}     # one checkpoint in memory
+        return self.loaded[fold](Xtr, W, Y, Xte)
+
+
 def fold_lookup(rep_dir: str, n: int):
     """``(tr_idx, te_idx) -> (Ztr, Zte)`` from the folder's fold*.npz, matched
     to the replica's folds by their test indices (never by call order).
     Same contract as scripts/run_giles_replica.py --fold-latents."""
     by_key: Dict = {}
+    fold_of: Dict = {}
     # glob.escape: variant labels carry brackets (E3[backbone=cnn]) that glob
     # would otherwise read as a character class
-    for path in sorted(glob.glob(os.path.join(glob.escape(rep_dir), "fold*.npz"))):
+    for k, path in enumerate(sorted(glob.glob(os.path.join(glob.escape(rep_dir), "fold*.npz")))):
         with np.load(path, allow_pickle=False) as z:
             tr, te = z["tr_idx"], z["te_idx"]
             if len(tr) + len(te) != n:
                 sys.exit(f"{path}: covers {len(tr) + len(te)} images, expected {n}")
-            by_key[(len(te), int(te[0]), int(te[-1]))] = (z["Ztr"].copy(), z["Zte"].copy(),
-                                                         tr.copy(), te.copy())
+            key = (len(te), int(te[0]), int(te[-1]))
+            by_key[key] = (z["Ztr"].copy(), z["Zte"].copy(), tr.copy(), te.copy())
+            fold_of[key] = int(z["fold"]) if "fold" in z.files else k
     if not by_key:
         sys.exit(f"no fold*.npz in {rep_dir}")
 
@@ -70,6 +105,7 @@ def fold_lookup(rep_dir: str, n: int):
             Ztr, Zte, tr, te = by_key[key]
             if not (np.array_equal(tr, tr_idx) and np.array_equal(te, te_idx)):
                 sys.exit(f"{rep_dir}: stored fold indices differ from the replica's")
+            CURRENT["fold"] = fold_of[key]
             return Ztr, Zte
         # a subset of one stored test fold (e.g. --test-singles): same training
         # side, rows of Zte picked by position
@@ -81,6 +117,7 @@ def fold_lookup(rep_dir: str, n: int):
         pos = {int(i): p for p, i in enumerate(te)}
         if not np.array_equal(tr, tr_idx) or any(int(i) not in pos for i in te_idx):
             sys.exit(f"{rep_dir}: requested test images are not a subset of one stored fold")
+        CURRENT["fold"] = fold_of[key]
         return Ztr, Zte[[pos[int(i)] for i in te_idx]]
 
     _lookup.n_folds = len(by_key)
@@ -164,31 +201,58 @@ def rep_meta(rep_dir: str) -> Dict:
                 "task": str(z["task"]), "n_folds": int(z["n_folds"]), "budget": str(z["budget"])}
 
 
-def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
-               modality: str = "receptor", scenario_name: str = "ideal",
-               deficits=None, with_volume: bool = False, with_nmf: bool = False,
-               groups_csv: Optional[str] = None, test_singles: bool = False,
-               estimators: Sequence[str] = (), only_estimators: bool = False,
-               ensemble: bool = False, ensemble_only: bool = False) -> List[Dict]:
-    """``estimators``: extra in-context estimators registered in the main
-    package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
-    weights, the design's Tier-4 evaluator); they are scored next to the
-    logistic regression and extra trees on the same folds."""
-    import pandas as pd
-
-    classifiers = ["logistic_regression", "extra_trees"]
+def resolve_classifiers(classifiers: Optional[Sequence[str]], estimators: Sequence[str] = (),
+                        only_estimators: bool = False, warm_up: bool = True) -> List[str]:
+    """The replica's classifier list for a scoring: ``classifiers`` (default
+    logistic regression and extra trees; a name outside the built-ins is a
+    member of the tabular foundation-model panel, ``tabpfn`` / ``tabicl``,
+    registered through ``neurocausalpfn.pfn.panel`` and warmed up now so a
+    missing weight file fails before the scoring) followed by the in-context
+    ``estimators``; ``only_estimators`` keeps the estimators alone."""
+    base = list(classifiers) if classifiers else list(gr.BUILTIN_CLASSIFIERS)
+    panel_names = [c for c in base if c not in gr.BUILTIN_CLASSIFIERS]
+    if panel_names:
+        from neurocausalpfn.pfn.panel import register_panel
+        register_panel(panel_names, warm_up=warm_up)
+    names = []
     for name in estimators:
         if name == "causalpfn":
             from neurocausalpfn.pfn.estimator import CausalPFNEstimator
             gr.register_estimator("causalpfn", CausalPFNEstimator())
+        elif name.endswith(".pt") and "{fold}" in name:
+            gr.register_estimator("pfn", PerFoldEstimator(name)); name = "pfn"
         elif name.endswith(".pt"):
             from neurocausalpfn.pfn.estimator import PFNEstimator
             gr.register_estimator("pfn", PFNEstimator(name)); name = "pfn"
         else:
             raise ValueError(f"unknown estimator {name!r}")
-        classifiers.append(name)
-    if only_estimators and estimators:
-        classifiers = classifiers[2:]        # the design's Tier 4: the fixed estimator alone
+        names.append(name)
+    if only_estimators and names:
+        return names                          # the design's Tier 4: the fixed estimator alone
+    return base + names
+
+
+def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str,
+               modality: str = "receptor", scenario_name: str = "ideal",
+               deficits=None, with_volume: bool = False, with_nmf: bool = False,
+               groups_csv: Optional[str] = None, test_singles: bool = False,
+               estimators: Sequence[str] = (), only_estimators: bool = False,
+               ensemble: bool = False, ensemble_only: bool = False,
+               only_folds: Optional[Sequence[int]] = None,
+               classifiers: Optional[Sequence[str]] = None) -> List[Dict]:
+    """``estimators``: extra in-context estimators registered in the main
+    package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
+    weights, the design's Tier-4 evaluator; a checkpoint path, or one with
+    ``{fold}`` for one checkpoint per fold); they are scored next to the
+    logistic regression and extra trees on the same folds. ``classifiers``
+    replaces that pair (``tabpfn``, ``tabicl``: the foundation-model panel,
+    scored one-model and two-model like the pair). ``only_folds`` scores
+    those folds alone (held-out folds of a pool experiment); the protocol and
+    the output folder carry the fold list."""
+    import pandas as pd
+
+    classifiers = resolve_classifiers(classifiers, estimators, only_estimators)
+    print("classifiers:", " ".join(classifiers), flush=True)
 
     groups = load_groups(groups_csv)
     dirs = modality_dirs(data_dir)
@@ -225,9 +289,16 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
             # evaluate only single-acquisition patients: none of them was in the
             # training side of its fold's encoder, whatever the group mode
             folds = restrict_test(folds, singles_mask(names, groups))
+        fold_tag = ""
+        if only_folds is not None:
+            keep = sorted(set(int(k) for k in only_folds))
+            if any(k < 0 or k >= len(folds) for k in keep):
+                sys.exit(f"--only-folds {keep}: the representation has {len(folds)} folds")
+            folds = [folds[k] for k in keep]
+            fold_tag = "-f" + ",".join(str(k) for k in keep)
 
         channel = meta.get("channel", "primary")
-        protocol = (f"grp-{gmode}" if gmode else "img") + ("-singles" if test_singles else "")
+        protocol = (f"grp-{gmode}" if gmode else "img") + ("-singles" if test_singles else "") + fold_tag
         name = f"{meta['eid']}|{meta['label']}|seed{meta['seed']}|{meta.get('budget', 'chain')}|{channel}|{protocol}"
         print(f"scoring {name} ({task} task, {modality}, {scenario_name}) ...", flush=True)
         res = gr.evaluate_representation(lookup, labels, pairs, scenario,
@@ -242,7 +313,7 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
 
         out_dir = os.path.join(out_root, "replica", meta["eid"],
                                str(meta["label"]).replace("/", "_"), f"seed{meta['seed']}",
-                               channel + ("-singles" if test_singles else ""))
+                               channel + ("-singles" if test_singles else "") + fold_tag)
         os.makedirs(out_dir, exist_ok=True)
         res.to_csv(os.path.join(out_dir, "replica_results.csv"), index=False)
         pd.DataFrame([row]).to_csv(os.path.join(out_dir, "replica_headline.csv"), index=False)
@@ -327,15 +398,22 @@ def main(argv=None):
     ap.add_argument("--groups", default=None,
                     help="the same filename,group,rank CSV the folds were trained with")
     ap.add_argument("--estimators", nargs="*", default=[],
-                    help="extra in-context estimators: 'causalpfn' (off-the-shelf, fixed weights) "
-                         "or a path to a trained Neuro-Causal-PFN checkpoint (pfn.pt)")
+                    help="extra in-context estimators: 'causalpfn' (off-the-shelf, fixed weights), "
+                         "a trained Neuro-Causal-PFN checkpoint (pfn.pt), or a path with '{fold}' "
+                         "for one checkpoint per fold")
     ap.add_argument("--only-estimators", action="store_true",
                     help="score the --estimators alone (no logistic regression / extra trees)")
+    ap.add_argument("--classifiers", nargs="+", default=None,
+                    help="classifiers fitted per slice, one-model and two-model (default "
+                         "logistic_regression extra_trees); 'tabpfn' and 'tabicl' are the "
+                         "tabular foundation-model panel (separate venv, GPU)")
     ap.add_argument("--ensemble", action="store_true",
                     help="also score the seed ensemble of every group of --reps sharing "
                          "eid/label/budget/channel (latents concatenated fold by fold)")
     ap.add_argument("--ensemble-only", action="store_true",
                     help="with --ensemble: skip the single seeds")
+    ap.add_argument("--only-folds", type=int, nargs="+", default=None,
+                    help="score these folds only (e.g. the held-out folds of a pool experiment)")
     ap.add_argument("--test-singles", action="store_true",
                     help="evaluate only patients with a single image (the paper's evaluation "
                          "set); training sides and stored folds unchanged, so no image of a "
@@ -346,7 +424,8 @@ def main(argv=None):
                with_volume=args.with_volume, with_nmf=args.with_nmf, groups_csv=args.groups,
                test_singles=args.test_singles, estimators=args.estimators,
                only_estimators=args.only_estimators, ensemble=args.ensemble,
-               ensemble_only=args.ensemble_only)
+               ensemble_only=args.ensemble_only, only_folds=args.only_folds,
+               classifiers=args.classifiers)
 
 
 if __name__ == "__main__":

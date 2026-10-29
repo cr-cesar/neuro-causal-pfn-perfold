@@ -78,6 +78,35 @@ Layout: `outputs_perfold/<eid>/<label>/seed<S>/fold<K>/` (checkpoints),
 (scores), `outputs_perfold/folds/fold<K>/` (symlink folders, shared by all
 variants), `outputs_perfold/labels/` (cached anatomical labels).
 
+## Running the study on a workstation (hashed export)
+
+A machine outside the cluster never sees a file name: the cohort is exported
+with hashed names and the folds pinned by name, so the split is the
+cluster's exactly.
+
+```bash
+# on Myriad (a short CPU job: ~8,000 images are rewritten with scrubbed headers)
+HASH_SALT_FILE=~/.cache_salt python -m ncpfold.export_hashed \
+    --data-dir ~/Scratch/data_bcb/"Full data" --groups outputs_perfold/groups_public.csv \
+    --dst ~/Scratch/export_bcb
+# -> export_bcb/Full data/{lesions,disconnectomes}/<hash>.nii.gz, export_bcb/fold_table.csv
+python -m ncpfold.plan --budget chain --data-dir "export_bcb/Full data" --out-root outputs_perfold_ws \
+    --groups export_bcb/fold_table.csv --emit-local > jobs_train.txt
+python -m ncpfold.plan --budget chain --data-dir "export_bcb/Full data" --out-root outputs_perfold_ws \
+    --groups export_bcb/fold_table.csv --emit-local-score > jobs_score.txt
+
+# on the workstation (export, this repo and the main repo copied; torch already in ~/env)
+WORKDIR=~/neuro-causal-pfn-perfold VENV=~/env bash ~/neuro-causal-pfn/scripts/run_jobs.sh jobs_train.txt
+WORKDIR=~/neuro-causal-pfn-perfold VENV=~/env bash ~/neuro-causal-pfn/scripts/run_jobs.sh jobs_score.txt
+```
+
+`--groups <fold_table.csv>` works for training and scoring alike: the `fold`
+column fixes the membership (`folds.fixed_folds`), the group and rank
+columns keep `--test-singles`. Several runners can share one GPU (`split -n
+l/3 jobs_train.txt part_` and one runner per part); a finished fold is a
+no-op, so a list can be restarted. Latents come back with hashed names; the
+cluster maps them with the same salt.
+
 ## Scope and cost
 
 | Experiments | Variants | Encoders per fold | 3 seeds x 10 folds | chain budget | published budget |
