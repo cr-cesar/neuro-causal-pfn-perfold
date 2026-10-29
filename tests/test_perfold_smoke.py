@@ -85,3 +85,23 @@ def test_e7b_dmvae_fold(tiny_data, tmp_path):
     path = run_fold("E7b", None, None, seed=0, fold=2, data_dir=tiny_data, out_root=out,
                     n_folds=3, overrides=SMOKE_OVERRIDES, device="cpu")
     _check(path, 3, 2, dim=50 + 2 * 25, channel="both")   # shared 50 + private 25 x 2
+
+
+def test_tiers_on_a_trained_fold(tiny_data, tmp_path):
+    """Tiers 1 and 3 (29 Oct) on the encoders of one smoke E1 fold."""
+    import csv
+
+    from ncpfold.tiers import run as tiers_run
+
+    out = str(tmp_path / "out")
+    run_fold("E1", None, None, seed=0, fold=1, data_dir=tiny_data, out_root=out,
+             n_folds=3, overrides=SMOKE_OVERRIDES, device="cpu")
+    var = os.path.join(out, "E1", "E1", "seed0")
+    for ch in ("disco", "lesion"):
+        rows = tiers_run(var, tiny_data, ch, str(tmp_path / f"t_{ch}.csv"), folds=[0, 1], device="cpu")
+        assert len(rows) == 1 and rows[0]["fold"] == 1                  # fold 0 was not trained here
+        r = rows[0]
+        assert 0.0 <= r["dice_mean"] <= 1.0 and 0 <= r["active_dims"] <= r["zdim"] == 50
+        assert r["n_test"] == len(np.load(os.path.join(var, "folds", "fold1.npz"))["te_idx"])
+        with open(tmp_path / f"t_{ch}.csv") as f:
+            assert len(list(csv.DictReader(f))) == 1
