@@ -279,7 +279,10 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
         n_folds = int(meta.get("n_folds", 10))
         lookup = fold_lookup(rep_dir, len(files)) if len(unit_dirs) == 1 else \
             ensemble_lookup([fold_lookup(d, len(files)) for d in unit_dirs])
-        if lookup.n_folds != n_folds:
+        # --only-folds may score a folder that is still being filled (some folds
+        # trained, others queued): the lookup then fails on any requested fold
+        # that is not stored, so the count is only checked for a full scoring
+        if lookup.n_folds != n_folds and only_folds is None:
             sys.exit(f"{rep_dir}: {lookup.n_folds} folds stored, meta says {n_folds}")
         gmode = meta.get("group_mode") or None
         if gmode and groups is None:
