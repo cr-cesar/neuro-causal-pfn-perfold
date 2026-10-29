@@ -239,7 +239,8 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
                estimators: Sequence[str] = (), only_estimators: bool = False,
                ensemble: bool = False, ensemble_only: bool = False,
                only_folds: Optional[Sequence[int]] = None,
-               classifiers: Optional[Sequence[str]] = None) -> List[Dict]:
+               classifiers: Optional[Sequence[str]] = None,
+               task_override: Optional[str] = None) -> List[Dict]:
     """``estimators``: extra in-context estimators registered in the main
     package's replica (``causalpfn`` = the off-the-shelf CausalPFN with fixed
     weights, the design's Tier-4 evaluator; a checkpoint path, or one with
@@ -264,7 +265,9 @@ def score_reps(rep_dirs: List[str], data_dir: str, atlas_dir: str, out_root: str
 
     for meta, unit_dirs in ensemble_units(rep_dirs, ensemble, ensemble_only):
         rep_dir = unit_dirs[0]
-        task = meta.get("task", "disconnectome")
+        # task_override (29 Oct): score a representation on another task's trials,
+        # e.g. the lesion-mask latents of a two-encoder variant on the lesion task
+        task = task_override or meta.get("task", "disconnectome")
         if task not in files_by_task:
             images_dir = task_dir(dirs, task)
             files_by_task[task] = list_images(images_dir)
@@ -414,6 +417,9 @@ def main(argv=None):
                     help="with --ensemble: skip the single seeds")
     ap.add_argument("--only-folds", type=int, nargs="+", default=None,
                     help="score these folds only (e.g. the held-out folds of a pool experiment)")
+    ap.add_argument("--task", default=None, choices=["disconnectome", "lesion"],
+                    help="trials to score on (default: the representation's own task, meta.json); "
+                         "use a separate --out-root, since the output layout does not name the task")
     ap.add_argument("--test-singles", action="store_true",
                     help="evaluate only patients with a single image (the paper's evaluation "
                          "set); training sides and stored folds unchanged, so no image of a "
@@ -425,7 +431,7 @@ def main(argv=None):
                test_singles=args.test_singles, estimators=args.estimators,
                only_estimators=args.only_estimators, ensemble=args.ensemble,
                ensemble_only=args.ensemble_only, only_folds=args.only_folds,
-               classifiers=args.classifiers)
+               classifiers=args.classifiers, task_override=args.task)
 
 
 if __name__ == "__main__":
