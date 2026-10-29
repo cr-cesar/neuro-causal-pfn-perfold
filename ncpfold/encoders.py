@@ -137,6 +137,10 @@ def _vae_cfg(meta: Dict, rep: str, zdim: int, seed: int, out_dir: str,
     cfg["vae"]["zdim"] = int(zdim)
     cfg["vae"]["backbone"] = meta.get("backbone", "resnet")
     cfg["vae"]["w_dice"] = 1.0 if rep == "disconnectome" else float(meta.get("w_dice", 1.0))
+    if meta.get("disco_recon"):
+        # 29 Oct (E1b): the disconnectome likelihood, "mse" (default) or "bce";
+        # set only when the variant pins it, so earlier variants are unchanged
+        cfg["vae"]["disco_recon"] = str(meta["disco_recon"])
     cfg["vae"]["use_daft"] = False
     cfg["vae"]["use_ard"] = bool(meta.get("use_ard", False))
     cfg["vae"]["use_pns"] = bool(meta.get("use_pns", False))
