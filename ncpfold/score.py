@@ -47,7 +47,12 @@ from .folds import all_folds, list_images, load_groups, modality_dirs, task_dir
 
 # the fold whose latents the lookup served last: the replica calls the lookup
 # once per fold before scoring it, so a per-fold estimator reads its fold here
-CURRENT: Dict[str, int] = {"fold": -1}
+# The main package's panel holds the same dict when it has one, so a TabPFN
+# with one checkpoint per fold ({fold} in TABPFN_MODEL_PATH) follows it too.
+try:
+    from neurocausalpfn.pfn.panel import CURRENT_FOLD as CURRENT
+except ImportError:                                     # a main package older than 29 Oct
+    CURRENT: Dict[str, int] = {"fold": -1}
 
 
 class PerFoldEstimator:
